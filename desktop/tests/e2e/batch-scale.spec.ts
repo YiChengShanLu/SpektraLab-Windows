@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('a 2844-frame RAW roll keeps thumbnails bounded while browsing and preserves selection at the far end', async ({ page }) => {
   await page.goto('/?open=');
-  await expect(page.getByTestId('tier-badge')).toHaveText('full');
+  await expect(page.getByTestId('tier-badge')).toHaveText('full', { timeout: 20_000 });
   const metrics = await page.evaluate(async () => {
     const app = (window as unknown as { __spk: { sessionStore: {
       getState(): { frames: { path: string; name: string }[] }; setState(patch: object): void;
@@ -36,7 +36,9 @@ test('a 2844-frame RAW roll keeps thumbnails bounded while browsing and preserve
     const { setAdjustments } = await import(loaded);
     setAdjustments((a: object) => ({ ...a, exposure: .25 }));
   });
-  await expect(page.getByTestId('tier-badge')).toHaveText('full');
+  // Hosted software rendering can exceed the default five-second assertion
+  // while the 2844-cell roll is mounted. Still require the completed full tier.
+  await expect(page.getByTestId('tier-badge')).toHaveText('full', { timeout: 20_000 });
   await expect.poll(subscriptionCount).toBeLessThan(40);
   await test.info().attach('scale-metrics', { body: JSON.stringify({ ...metrics, frames: 2844, mountedCounts }), contentType: 'application/json' });
 });
