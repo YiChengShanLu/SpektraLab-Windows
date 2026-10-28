@@ -2,7 +2,7 @@
 
 ## 使用
 
-[Windows 1.3.2 下载](https://github.com/YiChengShanLu/SpektraLab-Windows/releases/tag/v1.3.2-windows)：
+[Windows 1.3.3 下载](https://github.com/YiChengShanLu/SpektraLab-Windows/releases/tag/v1.3.3-windows)：
 选择 `-setup.exe` 安装到当前用户，或选择 `.zip` 便携版。安装版会检测并按需安装 WebView2。
 当前构建未进行代码签名，Windows 可能显示未识别的发布者；发布页附有 SHA-256 和完整源码。
 

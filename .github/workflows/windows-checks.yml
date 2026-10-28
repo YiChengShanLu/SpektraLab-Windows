@@ -44,3 +44,39 @@ jobs:
         run: |
           npm exec playwright install chromium
           npm run test:e2e
+      - name: Real SDK all-page trash and restore
+        run: node ../scripts/windows/test-library-selection.mjs ../build/spklib-windows/spklib-host.exe
+
+  package-ui:
+    if: github.ref == 'refs/heads/windows' && github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          cache-on-failure: true
+      - run: npm ci
+        working-directory: desktop
+      - name: Build Windows update with verified native release
+        shell: pwsh
+        run: ./scripts/windows/package-ui-update.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-ui-update
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            build/release/*.zip
+            build/release/*-setup.exe
+            build/release/*-source.tar.gz
+            build/release/SHA256SUMS.txt

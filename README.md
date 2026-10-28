@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-**Windows 1.3.2:** [Download installer or portable ZIP](https://github.com/YiChengShanLu/SpektraLab-Windows/releases/tag/v1.3.2-windows).
+**Windows 1.3.3:** [Download installer or portable ZIP](https://github.com/YiChengShanLu/SpektraLab-Windows/releases/tag/v1.3.3-windows).
 
 **Windows branch:** the current Windows editor is the Tauri/React app in
 `desktop/`, using native LibRaw/Vulkan and an integrated photo-library SDK.

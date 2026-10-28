@@ -13,7 +13,7 @@ import { turned } from '@shared/geometry';
 import { openFolderDialog, openFilesDialog, openExport, restartHost } from './actions';
 import { settingsStore } from '../state/settings';
 import { platform } from '../platform';
-import { hideLibrary, libraryStore, showLibrary } from '../library/model';
+import { hideLibrary, libraryStore, selectAllLibraryImages, showLibrary } from '../library/model';
 
 export interface KeyLike {
   key: string;
@@ -124,7 +124,7 @@ export function installKeys(menuOwns: Set<string> = new Set()): () => void {
     if (library.visible) {
       if ((e.target as HTMLElement | null)?.closest?.('[role="dialog"]')) return;
       if (c === 'escape' || c === 'ctrl+l') { e.preventDefault(); void hideLibrary(); return; }
-      if (c === 'ctrl+a' && !isEditable(e.target) && !library.busy) { e.preventDefault(); libraryStore.setState({ selected: library.images.map((image) => image.uuid) }); return; }
+      if (c === 'ctrl+a' && !isEditable(e.target) && !library.busy && !library.loading) { e.preventDefault(); void selectAllLibraryImages(); return; }
       if (!['ctrl+,', 'ctrl+q', 'f11'].includes(c)) return;
     }
     if ((s.exportOpen || s.settingsOpen || s.aboutOpen) && c !== 'escape' && !c.startsWith('ctrl+')) return;

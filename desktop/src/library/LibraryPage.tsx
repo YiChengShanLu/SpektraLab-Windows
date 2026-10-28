@@ -7,9 +7,9 @@ import { useSession } from '../state/session';
 import { libraryThumbs } from './thumbnails';
 import type { Collection, LibraryImage } from './client';
 import { activeVariant, albumMembership, cancelMetadataRead, captureOne, changeLibraryMetadata, chooseVariant, cloneLibraryVariant,
-  closeLibrary, createCollection, createLibrary, deleteCollection, describeLibraryImages, editLibraryPhotos, emptySessionTrash, forgetMissingImages,
+  clearLibrarySelection, closeLibrary, createCollection, createLibrary, deleteCollection, describeLibraryImages, editLibraryPhotos, emptySessionTrash, forgetMissingImages,
   hideLibrary, importLibraryPhotos, libraryStore, LIBRARY_PAGE_SIZE, moveSessionPhotos, openLibrary, relinkLocation,
-  removeWatchedFolder, restoreSessionPhotos, selectLibraryImage, setLibraryQuery, setLibraryThumbnailSize, showLibrary, syncLibrary, trashLibraryPhotos, updateCaptureOne,
+  removeWatchedFolder, restoreSessionPhotos, selectAllLibraryImages, selectedLibraryImages, selectLibraryImage, selectLibraryPage, setLibraryQuery, setLibraryThumbnailSize, showLibrary, syncLibrary, trashLibraryPhotos, updateCaptureOne,
   updateCollection, useLibrary, watchLibraryFolder } from './model';
 
 const colorNames = () => [tz('None', '无'), tz('Red', '红'), tz('Orange', '橙'), tz('Yellow', '黄'), tz('Green', '绿'), tz('Blue', '蓝'), tz('Purple', '紫'), tz('Pink', '粉')];
@@ -42,7 +42,7 @@ export function LibraryPage() {
   const [collectionKind, setCollectionKind] = useState<'album' | 'group' | 'project' | 'smart_album'>('album');
   const [collectionParent, setCollectionParent] = useState(''), [source, setSource] = useState(''), [captureMode, setCaptureMode] = useState<'link' | 'copy'>('link');
   const disabled = !!state.busy || batch, current = state.collections.find((c) => c.uuid === state.collection);
-  const selected = state.images.filter((image) => state.selected.includes(image.uuid)), image = selected[0], variant = image ? activeVariant(image) : null;
+  const selected = selectedLibraryImages(state), image = state.images.find((row) => state.selected.includes(row.uuid)) ?? selected[0], variant = image ? activeVariant(image) : null;
   const mirrored = !!state.info?.origin.kind.startsWith('capture_one');
   const selectedCanEdit = !!selected.length && selected.every((row) => row.exists !== false && ['raw', 'raster', 'pair'].includes(row.kind));
   useEffect(() => { if (!state.visible) libraryThumbs.reset(); }, [state.visible]);
@@ -121,9 +121,10 @@ export function LibraryPage() {
             <button className="pill" disabled={disabled} onClick={() => setLibraryQuery({ filter: {} })}>{tz('Clear filters', '清除筛选')}</button>
           </div>
           <div className="library-workbar">
-            <button className="pill" disabled={disabled || !state.images.length} onClick={() => libraryStore.setState({ selected: state.images.map((row) => row.uuid) })}>{tz('Select page', '选择本页')}</button>
-            <button className="pill" disabled={disabled || !selected.length} onClick={() => libraryStore.setState({ selected: [] })}>{tz('Clear selection', '取消选择')}</button>
-            <span className="caption">{selected.length} {tz('selected · original previews', '张已选 · 原片预览')}</span>
+            <button className="pill" disabled={disabled || state.loading || !state.total} onClick={() => void selectAllLibraryImages()} title={tz('Select every matching photograph across all pages (Ctrl+A)', '选择当前筛选结果的全部照片，包含其他页（Ctrl+A）')}>{tz('Select all results', '选择全部结果')}</button>
+            <button className="pill" disabled={disabled || state.loading || !state.images.length} onClick={selectLibraryPage}>{tz('Select page', '选择本页')}</button>
+            <button className="pill" disabled={disabled || !state.selected.length} onClick={clearLibrarySelection}>{tz('Clear selection', '取消选择')}</button>
+            <span className="caption" role="status" data-testid="library-selection-count">{state.selected.length.toLocaleString()} {tz('selected · original previews', '张已选 · 原片预览')}</span>
             <label className="library-sort">{tz('Sort', '排序')} <select aria-label={tz('Sort photographs', '照片排序')} value={state.sort} onChange={(e) => setLibraryQuery({ sort: e.target.value })} disabled={disabled}>{[['name', tz('Name', '文件名')], ['captured', tz('Capture date', '拍摄时间')], ['rating', tz('Rating', '评级')], ['added', tz('Added', '添加时间')]].map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
             <button className="pill" disabled={disabled} onClick={() => setLibraryQuery({ descending: !state.descending })}>{state.descending ? '↓' : '↑'}</button>
           </div>
@@ -135,7 +136,7 @@ export function LibraryPage() {
               if (disabled || (e.target as Element).closest('input, select, textarea, [role=menu]')) return;
               if (/^[0-5]$/.test(e.key) && state.selected.length) { e.preventDefault(); void changeLibraryMetadata({ rating: Number(e.key) }); return; }
               if (e.key === 'Enter' && selectedCanEdit) { e.preventDefault(); void editLibraryPhotos(selected, selected.length === 1 ? image : undefined); return; }
-              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); libraryStore.setState({ selected: state.images.map((row) => row.uuid) }); return; }
+              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); void selectAllLibraryImages(); return; }
               if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
               e.preventDefault();
               const columns = getComputedStyle(e.currentTarget).gridTemplateColumns.split(' ').length;

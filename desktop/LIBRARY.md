@@ -93,3 +93,9 @@ cargo test --release --locked -- --include-ignored
 The real Capture One catalog census in the SDK tests is gated by
 `SPKLIB_C1_CATALOG`. A passing fixture suite does not imply that a real catalog
 was supplied or that every Capture One format is supported.
+
+## Selecting photographs
+
+**Select all results** and **Ctrl+A** select the entire current collection/filter across grid pages. **Select page** selects only the visible page. Paging and sorting keep the selection; changing the collection or filters clears it. Ctrl-click or a checkbox toggles one photograph; **Clear selection** releases the whole selection. Ctrl+A inside the search field selects its text.
+
+Library trash changes records and retains source photographs. All-selection reads metadata, without decoding every RAW or mounting every thumbnail.

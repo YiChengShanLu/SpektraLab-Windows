@@ -15,22 +15,52 @@ interface LibraryState {
   visible: boolean; initialized: boolean; available: boolean; sdk: string; busy: string; loading: boolean; error: string; status: string;
   library: string | null; info: LibraryInfo | null; recent: Recent[]; collections: Collection[]; folders: Folder[]; locations: Location[];
   collection: string | null; filter: LibraryFilter; sort: string; descending: boolean; offset: number; total: number; images: LibraryImage[];
-  selected: string[]; variants: Record<string, string>; facets: { camera?: { value: string; count: number }[]; undescribed?: number };
+  selected: string[]; selectionImages: LibraryImage[]; variants: Record<string, string>; facets: { camera?: { value: string; count: number }[]; undescribed?: number };
   describeProgress: { done: number; total: number } | null;
   thumbnailSize: number;
 }
 export const libraryStore = createStore<LibraryState>()(() => ({
   visible: false, initialized: false, available: false, sdk: '', busy: '', loading: false, error: '', status: '', library: null, info: null,
   recent: [], collections: [], folders: [], locations: [], collection: null, filter: {}, sort: 'name', descending: false,
-  offset: 0, total: 0, images: [], selected: [], variants: {}, facets: {}, describeProgress: null, thumbnailSize: 150,
+  offset: 0, total: 0, images: [], selected: [], selectionImages: [], variants: {}, facets: {}, describeProgress: null, thumbnailSize: 150,
 }));
 export const useLibrary = <T,>(selector: (state: LibraryState) => T) => useStore(libraryStore, selector);
 const get = libraryStore.getState, set = libraryStore.setState;
 export const LIBRARY_PAGE_SIZE = 80;
 let queryGeneration = 0, describeCancelled = false, windows = false;
 const nativePath = (path: string) => windows && /^[a-z]:\//i.test(path) ? path.replaceAll('/', '\\') : path;
-const selectedImages = () => get().images.filter((image) => get().selected.includes(image.uuid));
+export function selectedLibraryImages(state = get()): LibraryImage[] {
+  const rows = new Map([...state.selectionImages, ...state.images].map((image) => [image.uuid, image]));
+  return state.selected.flatMap((id) => { const image = rows.get(id); return image ? [image] : []; });
+}
+const selectedImages = () => selectedLibraryImages();
 const params = (more: Record<string, unknown> = {}) => ({ library: get().library, ...more });
+async function matchingImages(state: LibraryState, checkFiles = false): Promise<LibraryImage[] | null> {
+  const generation = queryGeneration, rows = new Map<string, LibraryImage>();
+  for (let offset = 0; ;) {
+    const page = await libraryCall<ImagePage>('images.list', { library: state.library, collection: state.collection ?? undefined,
+      filter: state.filter, sort: state.sort, descending: state.descending, recursive: true, offset, limit: 500, full: true, check_files: checkFiles,
+      include_trashed: state.collections.find((c) => c.uuid === state.collection)?.kind === 'trash' });
+    if (generation !== queryGeneration || get().library !== state.library) return null;
+    for (const image of page.images) rows.set(image.uuid, { ...image, path: nativePath(image.path) });
+    offset += page.images.length;
+    if (!page.images.length || offset >= page.total) break;
+  }
+  return [...rows.values()];
+}
+export function clearLibrarySelection() { set({ selected: [], selectionImages: [] }); }
+export function selectLibraryPage() {
+  const state = get();
+  if (!state.busy && !state.loading) set({ selected: state.images.map((image) => image.uuid), selectionImages: state.images });
+}
+export async function selectAllLibraryImages() {
+  if (!get().library || get().loading) return;
+  await work(tz('Selecting all matching photographs', '正在选择全部结果'), async () => {
+    // Only library metadata is collected. Grid cells and RAW decoding stay paged.
+    const rows = await matchingImages(get());
+    if (rows) set({ selected: rows.map((image) => image.uuid), selectionImages: rows });
+  });
+}
 async function savedEditor() {
   await flushSave();
   if (hasUnsavedEdits() || sessionStore.getState().externalEditConflict) throw new Error(tz('The current edits could not be saved. Resolve the editor error first.', '当前编辑尚未保存，请先处理编辑器中的错误。'));
@@ -79,25 +109,32 @@ export async function loadLibraryPage() {
     if (page.total && page.offset >= page.total) { set({ offset: 0 }); void loadLibraryPage(); return; }
     const images = page.images.map((image) => ({ ...image, path: nativePath(image.path) }));
     libraryThumbs.reset();
-    set({ images, total: page.total, facets, selected: state.selected.filter((id) => images.some((image) => image.uuid === id)) });
+    const selected = new Set(get().selected), updated = new Map(images.map((image) => [image.uuid, image]));
+    set({ images, total: page.total, facets, selectionImages: selectedLibraryImages().filter((image) => selected.has(image.uuid)).map((image) => updated.get(image.uuid) ?? image) });
   } catch (e) { if (generation === queryGeneration) set({ error: String(e instanceof Error ? e.message : e) }); }
   finally { if (generation === queryGeneration) set({ loading: false }); }
 }
 export async function refreshLibrary() {
   if (!get().library) return;
-  const L = get().library;
+  const L = get().library, generation = queryGeneration;
   const [info, collections, folders, locations] = await Promise.all([
     libraryCall<LibraryInfo>('library.info', { library: L }), libraryCall<{ collections: Collection[] }>('collections.list', { library: L }),
     libraryCall<{ folders: Folder[] }>('folders.list', { library: L }), libraryCall<{ locations: Location[] }>('locations.list', { library: L }),
   ]);
-  if (get().library !== L) return;
+  if (get().library !== L || generation !== queryGeneration) return;
   set({ info, collections: collections.collections, folders: folders.folders, locations: locations.locations });
+  if (get().selected.length) {
+    const rows = await matchingImages(get());
+    if (!rows) return;
+    const selected = new Set(get().selected), retained = rows.filter((image) => selected.has(image.uuid));
+    set({ selected: retained.map((image) => image.uuid), selectionImages: retained });
+  }
   await loadLibraryPage();
 }
 async function activate(result: { library: string; info: LibraryInfo }) {
   const recent = [{ name: result.info.name, path: result.info.path, kind: result.info.kind }, ...get().recent.filter((r) => r.path !== result.info.path)].slice(0, 12);
   queryGeneration++;
-  set({ library: result.library, info: result.info, collection: null, filter: {}, offset: 0, images: [], selected: [], variants: {}, recent });
+  set({ library: result.library, info: result.info, collection: null, filter: {}, offset: 0, images: [], selected: [], selectionImages: [], variants: {}, recent });
   await platform().storeWrite('Library', 'recent.json', recent);
   await refreshLibrary();
 }
@@ -123,15 +160,17 @@ export async function createLibrary(kind: 'catalog' | 'session', name: string, p
 export async function closeLibrary() {
   await work(tz('Closing library', '正在关闭图库'), async () => {
     await leaveCurrent(); queryGeneration++;
-    set({ library: null, info: null, images: [], collections: [], folders: [], locations: [], total: 0, selected: [] });
+    set({ library: null, info: null, images: [], collections: [], folders: [], locations: [], total: 0, selected: [], selectionImages: [] });
   });
 }
 export function setLibraryQuery(change: Partial<Pick<LibraryState, 'filter' | 'collection' | 'sort' | 'descending' | 'offset'>>) {
-  set({ ...change, offset: change.offset ?? 0, selected: [], error: '' }); void loadLibraryPage();
+  if ('filter' in change || 'collection' in change) clearLibrarySelection();
+  set({ ...change, offset: change.offset ?? 0, error: '' }); void loadLibraryPage();
 }
 export function selectLibraryImage(id: string, additive = false) {
-  const selected = get().selected;
-  set({ selected: additive ? selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id] : [id] });
+  const state = get(), selected = additive ? state.selected.includes(id) ? state.selected.filter((item) => item !== id) : [...state.selected, id] : [id];
+  const rows = new Map([...state.selectionImages, ...state.images].map((image) => [image.uuid, image]));
+  set({ selected, selectionImages: selected.flatMap((key) => { const image = rows.get(key); return image ? [image] : []; }) });
 }
 export function chooseVariant(image: string, variant: string) { set({ variants: { ...get().variants, [image]: variant } }); }
 export function setLibraryThumbnailSize(value: number) {
@@ -147,17 +186,12 @@ export async function editLibraryPhotos(rows = selectedImages(), focusing?: Libr
     if (focusing) {
       // Like the Mac, double-click opens the entire current query into the
       // filmstrip, focused on the clicked photograph, across grid pages.
-      const state = get(), context: LibraryImage[] = [], seen = new Set<string>();
-      for (let offset = 0; ;) {
-        const page = await libraryCall<ImagePage>('images.list', { library: state.library, collection: state.collection ?? undefined,
-          filter: state.filter, sort: state.sort, descending: state.descending, recursive: true, offset, limit: 500, full: true, check_files: true,
-          include_trashed: state.collections.find((c) => c.uuid === state.collection)?.kind === 'trash' });
-        for (const image of page.images) {
-          const path = nativePath(image.path);
-          if (image.exists !== false && ['raw', 'raster', 'pair'].includes(image.kind) && !seen.has(path)) { seen.add(path); context.push({ ...image, path }); }
-        }
-        offset += page.images.length;
-        if (!page.images.length || offset >= page.total) break;
+      const context: LibraryImage[] = [], seen = new Set<string>();
+      const images = await matchingImages(get(), true);
+      if (!images) return;
+      for (const image of images) {
+        const path = nativePath(image.path);
+        if (image.exists !== false && ['raw', 'raster', 'pair'].includes(image.kind) && !seen.has(path)) { seen.add(path); context.push({ ...image, path }); }
       }
       rows = context;
       if (!rows.some((row) => row.uuid === focusing.uuid)) throw new Error(tz('The photograph is no longer available in this view.', '此照片已不在当前视图中或已离线。'));

@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文**
 
-**Windows 1.3.2：**[下载安装版或便携 ZIP](https://github.com/YiChengShanLu/SpektraLab-Windows/releases/tag/v1.3.2-windows)。
+**Windows 1.3.3：**[下载安装版或便携 ZIP](https://github.com/YiChengShanLu/SpektraLab-Windows/releases/tag/v1.3.3-windows)。
 
 **Windows 分支：**当前编辑器位于 `desktop/`，使用 Tauri/React 界面、LibRaw/Vulkan 原生处理及已集成的照片图库 SDK。
 安装使用、构建和已知限制见 [Windows 说明](docs/WINDOWS.md)，另见 [Windows 更新记录](CHANGELOG-Windows.md) 和 [来源与许可证](THIRD_PARTY.md)。

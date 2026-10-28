@@ -1,5 +1,12 @@
 # Windows changes
 
+## 1.3.3 Windows — 2026-10-28
+
+- Add Select all results / Ctrl+A across every page of the current library filter.
+- Keep selection while browsing pages; allow individual deselection and clearing the whole selection.
+- Apply ratings, album operations, editing and library trash to the full selection; preserve original files.
+- Collect only library metadata for all-selection; thumbnails and RAW decoding remain bounded to visible pages.
+
 ## 1.3.2 Windows — 2026-10-28
 
 Based on upstream PR #17 (`3dba85b`). These changes describe this Windows

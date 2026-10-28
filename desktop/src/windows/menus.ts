@@ -34,7 +34,7 @@ import {
 import { settingsStore } from '../state/settings';
 import { turned } from '@shared/geometry';
 import { platform } from '../platform';
-import { libraryStore, showLibrary } from '../library/model';
+import { libraryStore, selectAllLibraryImages, showLibrary } from '../library/model';
 import { replaceAppMenu } from './lifecycle';
 
 /** The Ctrl chords the menu owns; keys.ts leaves them to the menu in Tauri. */
@@ -97,7 +97,7 @@ export async function installMenu(): Promise<void> {
       await item(tz('Copy Settings', '拷贝设置'), copySettings, 'CmdOrCtrl+Shift+C'),
       await item(tz('Paste Settings', '粘贴设置'), () => void pasteSettings(), 'CmdOrCtrl+Shift+V'),
       await sep(),
-      await item(tz('Select All Photos', '选择全部照片'), selectAllFrames, 'CmdOrCtrl+A'),
+      await item(tz('Select All Photos', '选择全部照片'), () => { if (libraryStore.getState().visible) void selectAllLibraryImages(); else selectAllFrames(); }, 'CmdOrCtrl+A', true),
       await item(tz('Sync Settings', '同步设置'), () => void syncSettings()),
     ],
   });

@@ -44,7 +44,7 @@ test('library collection, selection and variant controls remain usable at deskto
   await library.getByRole('button', { name: 'Select 新疆0.ARW', exact: true }).focus();
   await page.keyboard.press('ArrowRight');
   await expect(library.getByRole('button', { name: 'Select 新疆1.ARW', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await page.keyboard.press('Control+a');
+  await library.getByRole('button', { name: 'Select page', exact: true }).click();
   expect(await library.locator('.library-card.selected').count()).toBe(80);
   await library.getByRole('button', { name: 'Select 新疆1.ARW', exact: true }).click({ button: 'right' });
   await expect(page.getByRole('menuitem', { name: 'Copy file path', exact: true })).toBeVisible();
@@ -60,4 +60,71 @@ test('library collection, selection and variant controls remain usable at deskto
   await expect(page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   await page.getByRole('dialog').getByLabel('Name', { exact: true }).fill('新建图库');
   await expect(page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+});
+
+test('all-selection covers every page, obeys filters, survives browsing and trashes/restores only records', async ({ page }) => {
+  await page.goto('/?open=');
+  await expect(page.getByTestId('tier-badge')).toHaveText('full');
+  await page.evaluate(() => {
+    const images = Array.from({ length: 205 }, (_, index) => ({ uuid: `image${index}`, file_name: `Photo ${index}.ARW`, path: `/owned/${index}.ARW`,
+      kind: 'raw', exists: false, rating: 0, color_tag: 0, trashed: false,
+      variants: [{ uuid: `v${index}`, position: 1, rating: 0, color_tag: 0, edit_revision: 0, origin: 'local' }] }));
+    const info = { uuid: 'L1', name: 'Owned fixture', path: '/owned/catalog', kind: 'catalog', origin: { kind: 'none' }, counts: { images: images.length } };
+    const collections = [{ uuid: 'trash', name: 'Trash', title: 'Trash', kind: 'trash', image_count: 0 }];
+    const w = window as unknown as { __spk: { libraryStore: { setState(patch: object): void } }; __TAURI_INTERNALS__: { invoke(command: string, args: { method: string; params: { offset?: number; limit?: number; filter?: { text?: string }; include_trashed?: boolean; images?: string[]; trashed?: boolean } }): Promise<unknown> } };
+    w.__spk.libraryStore.setState({ visible: true, initialized: true, available: true, library: 'L1', sdk: '0.3.1', info, collections, images: images.slice(0, 80), total: images.length });
+    // The browser host/platform are initialized above. Only this fixture's SDK
+    // calls use a test IPC bridge; no actual photo, catalog or native filesystem.
+    w.__TAURI_INTERNALS__ = { invoke: async (command, { method, params: p }) => {
+      if (command !== 'library_request') throw new Error(`Unexpected native call: ${command}`);
+      if (method === 'images.list') {
+        const rows = images.filter((image) => (p.include_trashed ? image.trashed : !image.trashed) && (!p.filter?.text || image.file_name.includes(p.filter.text)));
+        const offset = p.offset ?? 0; return { images: rows.slice(offset, offset + (p.limit ?? 80)), total: rows.length, offset };
+      }
+      if (method === 'images.trash') { for (const image of images) if (p.images?.includes(image.uuid)) image.trashed = p.trashed!; return {}; }
+      if (method === 'library.info') return info;
+      if (method === 'collections.list') return { collections: collections.map((c) => ({ ...c, image_count: images.filter((image) => image.trashed).length })) };
+      if (method === 'folders.list') return { folders: [] };
+      if (method === 'locations.list') return { locations: [] };
+      if (method === 'images.facets') return {};
+      throw new Error(`Unexpected SDK mutation: ${method}`);
+    } };
+  });
+  const library = page.getByTestId('library-page'), count = library.getByTestId('library-selection-count');
+  await library.getByRole('button', { name: 'Select all results', exact: true }).click();
+  await expect(count).toContainText('205 selected');
+  await expect(library.locator('.library-card')).toHaveCount(80);
+  await library.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(library.getByRole('button', { name: 'Select Photo 80.ARW', exact: true })).toBeVisible();
+  await expect(count).toContainText('205 selected');
+  await expect(library.locator('.library-card.selected')).toHaveCount(80);
+  await library.getByRole('checkbox', { name: 'Add Photo 80.ARW to selection', exact: true }).uncheck();
+  await expect(count).toContainText('204 selected');
+  await library.getByRole('button', { name: 'Clear selection', exact: true }).click();
+  await expect(count).toContainText('0 selected');
+  await library.getByRole('button', { name: 'Select Photo 80.ARW', exact: true }).focus();
+  await page.keyboard.press('Control+a');
+  await expect(count).toContainText('205 selected');
+  const search = library.getByRole('textbox', { name: 'Search filenames' });
+  await search.fill('200.ARW');
+  await expect(count).toContainText('0 selected');
+  await expect(library.locator('.library-card')).toHaveCount(1);
+  await search.press('Control+a');
+  await expect(count).toContainText('0 selected');
+  await library.getByRole('button', { name: 'Select all results', exact: true }).click();
+  await expect(count).toContainText('1 selected');
+  await search.fill('');
+  await expect(library.locator('.library-card')).toHaveCount(80);
+  await library.getByRole('button', { name: 'Select all results', exact: true }).click();
+  await expect(count).toContainText('205 selected');
+  await library.getByRole('button', { name: 'Hide in library trash', exact: true }).click();
+  await expect(library.locator('.library-card')).toHaveCount(0);
+  await expect(count).toContainText('0 selected');
+  await library.getByRole('button', { name: 'Trash 205', exact: true }).click();
+  await expect(library.locator('.library-card')).toHaveCount(80);
+  await library.getByRole('button', { name: 'Select all results', exact: true }).click();
+  await expect(count).toContainText('205 selected');
+  await library.getByRole('button', { name: 'Restore from trash', exact: true }).click();
+  await expect(library.locator('.library-card')).toHaveCount(0);
+  await expect(count).toContainText('0 selected');
 });
