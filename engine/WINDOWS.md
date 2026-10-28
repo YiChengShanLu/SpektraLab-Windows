@@ -1,5 +1,11 @@
 # Windows build and validation
 
+The current MSVC x64 Windows desktop build and portable package are documented
+in [docs/WINDOWS.md](../docs/WINDOWS.md). That build uses `desktop/` (Tauri),
+including the library SDK, and has real RAW validation on an RTX 4060 Laptop
+GPU. The MinGW/Qt instructions below describe the earlier port and remain for
+contributors using that toolchain; their acceptance scope is separate.
+
 The Windows port uses the existing C++20 film/print pipeline with a Vulkan
 compute backend. It includes a native RAW-to-TIFF command-line host and a
 minimal Win32 viewer, plus a Qt Quick editor. These executables do not require Python at runtime. The
@@ -22,7 +28,8 @@ Python film-model reference.
 
 The validated toolchain is 64-bit MinGW GCC 15.2 and CMake/CTest 3.25.0 on
 Windows, with an NVIDIA GeForce RTX 5070 Ti. MSVC and other GPU vendors have
-not completed the same acceptance tests.
+not completed that earlier MinGW acceptance matrix; current MSVC validation
+is described in the guide linked above.
 
 Install a C++20 MinGW compiler, CMake/CTest and Vulkan development tools. Put
 the compiler and CMake tools on `PATH`; the build wrapper can find

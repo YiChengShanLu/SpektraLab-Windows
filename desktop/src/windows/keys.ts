@@ -10,9 +10,10 @@
 
 import { makePair, setAdjustments, setGeometry, selectRelative, setOriginal, setTool, toggleCompare, undo, redo, zoomStep, zoomTo, zoomToFit, currentFitZoom, copySettings, pasteSettings, selectAllFrames, sessionStore, setPages } from '../state/session';
 import { turned } from '@shared/geometry';
-import { openDialog, openFilesDialog, openExport, restartHost } from './actions';
+import { openFolderDialog, openFilesDialog, openExport, restartHost } from './actions';
 import { settingsStore } from '../state/settings';
 import { platform } from '../platform';
+import { hideLibrary, libraryStore, showLibrary } from '../library/model';
 
 export interface KeyLike {
   key: string;
@@ -50,8 +51,8 @@ export function shortcutTable(): Record<string, Action> {
   const geo = (fn: Parameters<typeof setGeometry>[0]) => () => setGeometry(fn);
   return {
     // Ctrl (Cmd on a Mac keyboard) — also menu accelerators in the app.
-    'ctrl+o': () => void openDialog(),
-    'ctrl+shift+o': () => void openFilesDialog(),
+    'ctrl+o': () => void openFilesDialog(),
+    'ctrl+shift+o': () => void openFolderDialog(),
     'ctrl+q': () => void import('@tauri-apps/api/window').then((w) => w.getCurrentWindow().close()),
     'ctrl+e': openExport,
     'ctrl+j': () => void makePair(),
@@ -77,6 +78,7 @@ export function shortcutTable(): Record<string, Action> {
     'ctrl+alt+]': geo((g) => turned(g, 1)),
     'ctrl+alt+r': () => void restartHost(),
     'ctrl+,': () => setPages({ settingsOpen: true }),
+    'ctrl+l': () => void showLibrary(),
     f11: () => void platform().toggleFullscreen(),
     // Capture One's single keys.
     v: () => setTool('select'),
@@ -111,12 +113,20 @@ export function webviewOwnsMenuKeys(userAgent = navigator.userAgent): boolean {
 export function installKeys(menuOwns: Set<string> = new Set()): () => void {
   const table = shortcutTable();
   const onKey = (e: KeyboardEvent) => {
+    if (e.defaultPrevented) return;
     if (isTypingKey(e)) return;
     // The native menu's accelerators: the menu runs them, not this handler.
     if (menuOwns.has(chord(e))) return;
     // Pages over the editor take only their own keys (and Escape).
     const s = sessionStore.getState();
     const c = chord(e);
+    const library = libraryStore.getState();
+    if (library.visible) {
+      if ((e.target as HTMLElement | null)?.closest?.('[role="dialog"]')) return;
+      if (c === 'escape' || c === 'ctrl+l') { e.preventDefault(); void hideLibrary(); return; }
+      if (c === 'ctrl+a' && !isEditable(e.target) && !library.busy) { e.preventDefault(); libraryStore.setState({ selected: library.images.map((image) => image.uuid) }); return; }
+      if (!['ctrl+,', 'ctrl+q', 'f11'].includes(c)) return;
+    }
     if ((s.exportOpen || s.settingsOpen || s.aboutOpen) && c !== 'escape' && !c.startsWith('ctrl+')) return;
     if (s.batchExporting && c !== 'f11') return;
     // Text editing shortcuts belong to the focused field, not the photograph.

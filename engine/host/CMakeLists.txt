@@ -29,7 +29,7 @@ endif()
 if(BUILD_TESTING)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
-        foreach(workflow source proof cineon film_edge pair)
+        foreach(workflow source proof cineon film_edge pair runtime)
             add_test(NAME spk_host_${workflow}_workflow COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../tests/host_${workflow}.py"
                 --host "$<TARGET_FILE:spektralab-host>" --resources "${CMAKE_CURRENT_BINARY_DIR}/../resources")
@@ -48,6 +48,12 @@ if(BUILD_TESTING)
         target_link_options(spk_host_lens PRIVATE -static)
     endif()
     add_test(NAME spk_host_lens COMMAND spk_host_lens "${CMAKE_CURRENT_BINARY_DIR}/lens-tests")
+    if(WIN32)
+        # A defined XDG path exercises GLib's quark table during startup.
+        # Static Windows builds must retain GLib's constructor and TLS callback.
+        set_tests_properties(spk_host_lens PROPERTIES
+            ENVIRONMENT "XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/lens-tests")
+    endif()
     add_executable(spk_host_inputs ../tests/host_inputs.cpp image_io.cpp input_formats.cpp lens_correction.cpp platform.cpp
         stb_impl.cpp tiff_ifd.cpp white_balance.cpp)
     target_compile_features(spk_host_inputs PRIVATE cxx_std_20)
@@ -103,7 +109,7 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_BINARY_DIR}/codec-test-output")
 endif()
 if(WIN32)
-    target_link_libraries(spektralab-host PRIVATE ws2_32 shell32)
+    target_link_libraries(spektralab-host PRIVATE ws2_32 shell32 psapi)
 endif()
 if(SPEKTRALAB_STATIC_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(spektralab-host PRIVATE -static-libstdc++ -static-libgcc)

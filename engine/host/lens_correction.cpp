@@ -40,8 +40,12 @@ struct Match {const lfCamera* camera=nullptr;const lfLens* lens=nullptr;std::str
 Match match(const Probe& probe) {
     if(!database)return {nullptr,nullptr,database_error};
     const auto& m=probe.metadata;
-    if(m.model.empty()||m.lens.empty()||!m.focal_mm)return {nullptr,nullptr,"camera, lens or focal-length metadata is missing"};
-    const lfCamera** cameras=database->FindCameras(nullptr,m.model.c_str());
+    if(m.model.empty()||m.lens.empty()||!m.focal_mm||!std::isfinite(*m.focal_mm)||*m.focal_mm<=0)
+        return {nullptr,nullptr,"camera, lens or valid focal-length metadata is missing"};
+    const lfCamera** cameras=database->FindCameras(m.make.empty()?nullptr:m.make.c_str(),m.model.c_str());
+    // Some makers put the brand in Model too. Retain the existing unique-model
+    // fallback, while using Make to disambiguate otherwise identical models.
+    if ((!cameras || !cameras[0]) && !m.make.empty()) {lf_free(cameras);cameras=database->FindCameras(nullptr,m.model.c_str());}
     const lfCamera* camera=nullptr;
     if(cameras&&cameras[0]&&!cameras[1])camera=cameras[0];
     lf_free(cameras);
@@ -81,7 +85,8 @@ Correction prepare(const Probe& probe) {
             }
         }
     }
-    if(probe.metadata.aperture)flags=mod.EnableVignettingCorrection(float(*probe.metadata.aperture),float(out.info.focus_distance_m));
+    if(probe.metadata.aperture&&std::isfinite(*probe.metadata.aperture)&&*probe.metadata.aperture>0)
+        flags=mod.EnableVignettingCorrection(float(*probe.metadata.aperture),float(out.info.focus_distance_m));
     out.info.vignetting=(flags&LF_MODIFY_VIGNETTING)!=0;
     out.info.available=out.info.distortion||out.info.tca||out.info.vignetting;
     out.info.profile=lf_mlstr_get(selected.lens->Model);
@@ -168,6 +173,10 @@ bool correct_lens(FloatImage& image,Probe& probe,std::string& error) {
                 }
             }
         });
+        // A vignetting-only profile changes gains, not coordinates.
+        if(!correction.info.distortion&&!correction.info.tca) {
+            correction.info.applied=true;probe.metadata.lens_correction=correction.info;return true;
+        }
         std::vector<float> output(image.rgb.size());
         parallel_rows(h,[&](uint32_t first,uint32_t last){
             std::vector<float> coordinates(size_t(w)*6);

@@ -11,6 +11,8 @@ import { installKeys, webviewOwnsMenuKeys } from './windows/keys';
 import { MENU_CHORDS, installMenu } from './windows/menus';
 import { inTauri } from './host/transport';
 import { useSettings } from './state/settings';
+import { libraryStore } from './library/model';
+import { installCloseGuard } from './windows/lifecycle';
 
 function applySettings() {
   const s = settingsStore.getState();
@@ -31,7 +33,11 @@ settingsStore.subscribe((s) => {
 });
 
 installKeys(inTauri() && !webviewOwnsMenuKeys() ? MENU_CHORDS : new Set());
+if (inTauri()) void installCloseGuard().catch((e) => console.error('close guard', e));
 if (inTauri()) void installMenu().catch((e) => console.error('menu', e));
+libraryStore.subscribe((state, previous) => {
+  if (state.visible !== previous.visible && inTauri()) void installMenu().catch((e) => console.error('menu', e));
+});
 
 // The webview's own context menu (Reload / Inspect) is not the app's.
 if (import.meta.env.PROD) window.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -53,4 +59,5 @@ void boot();
 // For the layout harness and for debugging from the webview inspector.
 import { sessionStore } from './state/session';
 import { frameImages } from './state/frames';
-(window as unknown as Record<string, unknown>).__spk = { sessionStore, settingsStore, frameImages };
+import { thumbs } from './state/thumbs';
+(window as unknown as Record<string, unknown>).__spk = { sessionStore, settingsStore, frameImages, libraryStore, thumbs };

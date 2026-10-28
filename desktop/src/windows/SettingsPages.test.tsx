@@ -2,10 +2,10 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), cache: vi.fn(), clear: vi.fn(), configure: vi.fn(), report: vi.fn() }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), cache: vi.fn(), clear: vi.fn(), configure: vi.fn(), report: vi.fn(), policy: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('../host/transport', () => ({ inTauri: () => true }));
-vi.mock('../host/client', () => ({ host: () => ({ memoryReport: mocks.report }) }));
+vi.mock('../host/client', () => ({ host: () => ({ memoryReport: mocks.report, memoryPolicy: mocks.policy }) }));
 vi.mock('../state/displayCache', () => ({ displayCacheStatus: mocks.cache, clearDisplayCache: mocks.clear, configureDisplayCache: mocks.configure }));
 vi.mock('../platform', () => ({ platform: () => ({ reveal: vi.fn(), openUrl: vi.fn() }) }));
 vi.mock('../i18n', () => ({ tz: (s: string) => s }));
@@ -15,10 +15,23 @@ import { AgentsSettings, MemorySettings, UpdateSettings, formatBytes } from './S
 let root: Root, div: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal('React', React); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); vi.clearAllMocks();
+  mocks.policy.mockResolvedValue({ reserve_mb: 1024, working_set_mb: 4096, unlimited: false, allow_over_reserve: false,
+    decode_cache_gib: 8, decode_cache_bytes: 0, decode_cache_entries: 0, decode_cache_hits: 0 });
   div = document.createElement('div'); document.body.append(div); root = createRoot(div);
 });
 afterEach(async () => { await act(async () => root.unmount()); div.remove(); vi.unstubAllGlobals(); });
 const button = (text: string) => [...div.querySelectorAll('button')].find((b) => b.textContent === text)!;
+it('saves the real memory policy and clears RAW cache without silently applying unsaved controls', async () => {
+  mocks.report.mockResolvedValue({ total_bytes: 0 }); mocks.cache.mockResolvedValue(null);
+  await act(async () => root.render(<MemorySettings />));
+  expect(div.querySelector('[aria-label="Memory reserve"]')).not.toBeNull();
+  await act(async () => button('Unlimited working set').click());
+  await act(async () => button('Apply budget and RAW cache').click());
+  expect(mocks.policy).toHaveBeenLastCalledWith({ reserve_mb: 1024, working_set_mb: 4096, unlimited: true,
+    allow_over_reserve: false, decode_cache_gib: 8 }, false);
+  await act(async () => button('Clear RAW cache').click());
+  expect(mocks.policy).toHaveBeenLastCalledWith(undefined, true);
+});
 it('distinguishes a loading native cache from unavailable browser support', async () => {
   let finish!: (value: unknown) => void;
   mocks.report.mockResolvedValue({ total_bytes: 0 });

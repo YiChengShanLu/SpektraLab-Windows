@@ -4,6 +4,7 @@
 
 import { host } from '../host/client';
 import { rgbaToURL } from './frames';
+import { cameraDescriptor, displayCacheKey, readDisplayCache } from './displayCache';
 
 interface Entry {
   url: string;
@@ -12,9 +13,10 @@ interface Entry {
 }
 
 const MAX_CONCURRENT = 2;
+const MAX_CAMERA_ENTRIES = 256;
 type RequestSource = 'general' | 'filmstrip';
 
-class ThumbCache {
+export class ThumbCache {
   private map = new Map<string, Entry>();
   private queue: { path: string; source: RequestSource }[] = [];
   private pending = new Set<string>();
@@ -28,7 +30,10 @@ class ThumbCache {
 
   get(path: string, source: RequestSource = 'general'): string | null {
     const e = this.map.get(path);
-    if (e) return e.url;
+    if (e) {
+      this.map.delete(path); this.map.set(path, e);
+      return e.url;
+    }
     if (source === 'filmstrip' && !this.filmstripPaths.has(path)) return null;
     // An export-grid request must survive the same cell leaving the strip.
     if (source === 'general') {
@@ -64,7 +69,9 @@ class ThumbCache {
   setPrint(path: string, url: string, filmCanvas = false) {
     const old = this.map.get(path);
     if (old) URL.revokeObjectURL(old.url);
+    this.map.delete(path);
     this.map.set(path, { url, print: true, filmCanvas });
+    this.trim();
     this.emit();
   }
 
@@ -97,6 +104,21 @@ class ThumbCache {
     for (const l of this.listeners) l();
   }
 
+  private trim() {
+    // Keep the small developed JPEGs: replacing one with an embedded camera
+    // preview on a revisit would show the wrong edit. Decoded images/canvases
+    // are released separately when their cells leave the visible strip.
+    let cameras = 0;
+    for (const entry of this.map.values()) if (!entry.print) cameras++;
+    for (const [path, entry] of this.map) {
+      if (cameras <= MAX_CAMERA_ENTRIES) break;
+      if (entry.print) continue;
+      URL.revokeObjectURL(entry.url);
+      this.map.delete(path);
+      cameras--;
+    }
+  }
+
   private pump() {
     while (!this.paused && this.running < MAX_CONCURRENT && this.queue.length) {
       const { path } = this.queue.shift()!;
@@ -106,9 +128,13 @@ class ThumbCache {
       this.running++;
       void (async () => {
         try {
-          const img = await host().thumbnail(path, 320);
+          // Prepared camera previews are independent of the render host's FIFO.
+          // Retain only the small JPEG, not a second copy of its 2048px pixels.
+          const key = await displayCacheKey(cameraDescriptor(path));
+          const cached = key ? await readDisplayCache(key, { retain: false }) : null;
+          const img = cached ?? await host().thumbnail(path, 320);
           const url = await rgbaToURL(img);
-          if (url && current() && !this.map.get(path)?.print) this.map.set(path, { url, print: false });
+          if (url && current() && !this.map.get(path)?.print) { this.map.set(path, { url, print: false }); this.trim(); }
           else if (url) URL.revokeObjectURL(url);
           else if (current()) this.failed.add(path);
         } catch {

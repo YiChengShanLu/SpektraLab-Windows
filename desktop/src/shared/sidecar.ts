@@ -18,12 +18,14 @@ export interface DecodeSettings {
   temperature: number;
   tint: number;
   lensCorrection: boolean;
+  rawMode?: 'auto' | 'compatible16' | 'headroom';
 }
 export const DECODE_DEFAULT: DecodeSettings = {
   whiteBalance: 'As Shot',
   temperature: 5500,
   tint: 0,
   lensCorrection: false,
+  rawMode: 'auto',
 };
 
 export interface Sidecar {
@@ -81,6 +83,8 @@ export function decodeSidecar(raw: unknown): Sidecar {
       temperature: typeof d.temperature === 'number' ? d.temperature : DECODE_DEFAULT.temperature,
       tint: typeof d.tint === 'number' ? d.tint : DECODE_DEFAULT.tint,
       lensCorrection: d.lensCorrection === true,
+      rawMode: d.rawMode === 'auto' || d.rawMode === 'headroom' || d.rawMode === 'compatible16' ? d.rawMode
+        : o.decoder === 'libraw' ? 'compatible16' : 'auto',
     },
     params: o.params ? decodeFilmParams(o.params) : FILM_PARAMS_DEFAULT,
     adjustments: o.adjustments ? decodeAdjustments(o.adjustments) : ADJUSTMENTS_DEFAULT,
@@ -111,4 +115,20 @@ export function encodeSidecar(s: Sidecar): Record<string, unknown> {
   out.state = { [s.state]: {} };
   // `source` is written by the core from the file itself.
   return out;
+}
+
+/** Auto-filled camera numbers, physical scale and rebate text are not edits. */
+export function isUntouched(sidecar: Sidecar): boolean {
+  if (sidecar.state !== 'unprocessed') return false;
+  const known = new Set(['schemaVersion', 'decoder', 'decode', 'params', 'adjustments', 'geometry', 'crop', 'heldCrop', 'solvedEV', 'placementNeedsFit', 'state', 'source', '_spkRevision', '_spkLibraryRevision']);
+  if (Object.keys(sidecar.raw).some((key) => !known.has(key))) return false;
+  const fresh = newSidecar(), p = sidecar.params;
+  const policy = { ...sidecar.decode, rawMode: fresh.decode.rawMode };
+  const decode = policy.whiteBalance === 'As Shot' ? { ...policy, temperature: fresh.decode.temperature, tint: fresh.decode.tint } : policy;
+  const normalized = { ...sidecar, raw: {}, decoder: fresh.decoder, decode, params: { ...p, filmFormatMM: fresh.params.filmFormatMM,
+    filmEdge: { ...p.filmEdge, seeded: fresh.params.filmEdge.seeded, cameraSeed: fresh.params.filmEdge.cameraSeed, frameSeed: fresh.params.filmEdge.frameSeed, frameNumber: fresh.params.filmEdge.frameNumber,
+      edgeText: fresh.params.filmEdge.edgeText, fNumber: fresh.params.filmEdge.fNumber, framing: fresh.params.filmEdge.framing },
+    dateBack: { ...p.dateBack, text: fresh.params.dateBack.text, dataText: fresh.params.dateBack.dataText, camera: fresh.params.dateBack.camera,
+      framing: fresh.params.dateBack.framing, frameScale: fresh.params.dateBack.frameScale } } };
+  return JSON.stringify(encodeSidecar(normalized)) === JSON.stringify(encodeSidecar(fresh));
 }

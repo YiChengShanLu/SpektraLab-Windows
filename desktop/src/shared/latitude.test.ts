@@ -2,8 +2,19 @@ import { describe, expect, it } from 'vitest';
 import fixtures from './fixtures/latitude-fit.json';
 import { SCENE_LATITUDE_DEFAULT } from './params';
 import { applyLatitudeFit, fitPlacement, placementIntent, placementLanding, placementMessage, placementWindow,
-  type LatitudeFit, type PlacementMeasured } from './latitude';
+  latitudeReadout, type LatitudeReply, type LatitudeFit, type PlacementMeasured } from './latitude';
 const measured: PlacementMeasured = { highlightExtreme: 7, highlightBoundary: 4, shadowExtreme: -8, shadowBoundary: -5 };
+
+it('reads the placed histogram and measured CIE L* separation like Mac LatitudeReadout', () => {
+  const r = { medium: { shadow_ev: -1, highlight_ev: 1, y_white: 1,
+    ramp_ev: [-3, -2, -1, 0, 1], ramp_y: [0, .001, .01, .1, 1] },
+    scene: { histogram: { lo_ev: -4, hi_ev: 4, fractions: [1, 0, 0, 0], placed_fractions: [.1, .4, .4, .1] } } } as LatitudeReply;
+  const readout = latitudeReadout(r);
+  expect(readout).toMatchObject({ centres: [-3, -1, 1, 3], below: .1, above: .1, within: .8, core: [.5, .5] });
+  expect(readout.separation.at(-1)?.strength).toBe(1);
+  expect(readout.separation[0]!.strength).toBeLessThan(.02);
+  expect(latitudeReadout({ ...r, medium: { ...r.medium, ramp_y: [] } }).core).toBeNull();
+});
 
 describe('Scene Placement against the engine CPU oracle', () => {
   it('matches 1,620 valid curves and first refusals across rolloff, lift bounds and scene widths', () => {

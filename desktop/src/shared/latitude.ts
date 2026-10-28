@@ -31,6 +31,27 @@ export interface LatitudeReply {
 export interface PlacementMeasured {
   highlightExtreme: number; highlightBoundary: number; shadowExtreme: number; shadowBoundary: number;
 }
+
+/** Mac LatitudeReadout: measured CIE L* change per stop, normalized to its peak. */
+export function latitudeReadout(reply: LatitudeReply) {
+  const h = reply.scene.histogram, fractions = h.placed_fractions ?? h.fractions;
+  const centres = fractions.map((_, i) => h.lo_ev + (i + .5) * (h.hi_ev - h.lo_ev) / Math.max(1, fractions.length));
+  let below = 0, above = 0, total = 0;
+  fractions.forEach((value, i) => { total += value; if (centres[i]! < reply.medium.shadow_ev) below += value; else if (centres[i]! > reply.medium.highlight_ev) above += value; });
+  const white = Math.max(reply.medium.y_white ?? 1, 1e-9);
+  const lightness = (reply.medium.ramp_y ?? []).map((value) => {
+    const ratio = Math.max(0, value) / white;
+    return ratio > .008856 ? 116 * Math.cbrt(ratio) - 16 : 903.3 * ratio;
+  });
+  const ev = reply.medium.ramp_ev ?? [], separation: { ev: number; strength: number }[] = [];
+  for (let i = 0; i + 1 < Math.min(ev.length, lightness.length); i++) if (ev[i + 1]! > ev[i]!)
+    separation.push({ ev: (ev[i]! + ev[i + 1]!) / 2, strength: Math.max(0, (lightness[i + 1]! - lightness[i]!) / (ev[i + 1]! - ev[i]!)) });
+  const peak = Math.max(0, ...separation.map((sample) => sample.strength));
+  for (const sample of separation) sample.strength = peak > 0 ? sample.strength / peak : 0;
+  const full = separation.filter((sample) => sample.strength >= .5).map((sample) => sample.ev);
+  return { fractions, centres, below, above, within: Math.max(0, total - below - above), total, separation,
+    core: full.length ? [Math.min(...full), Math.max(...full)] as [number, number] : null };
+}
 export type PlacementOutcome = { placed: SceneLatitudeSettings; issue?: never } | { issue: PlacementIssue; placed?: never };
 export interface PlacementWindow { span: [number, number] | null; below: PlacementIssue; above: PlacementIssue | null }
 export const PLACEMENT_RANGE: [number, number] = [0, 8];

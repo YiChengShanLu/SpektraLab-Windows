@@ -7,13 +7,19 @@ target_include_directories(spk_lens INTERFACE "${SPEKTRALAB_LENS_PREFIX}/include
     "${SPEKTRALAB_LENS_PREFIX}/include/glib-2.0" "${SPEKTRALAB_LENS_PREFIX}/lib/glib-2.0/include")
 target_compile_definitions(spk_lens INTERFACE CONF_LENSFUN_STATIC GLIB_STATIC_COMPILATION G_INTL_STATIC_COMPILATION PCRE2_STATIC)
 foreach(component lensfun glib-2.0 intl pcre2-8)
-    if(MSVC)
+    # Lensfun's CMake build uses .lib with MSVC, while Meson keeps the
+    # lib*.a names for its MSVC-built GLib dependencies. Both are COFF archives.
+    set(archive "${SPEKTRALAB_LENS_PREFIX}/lib/lib${component}.a")
+    if(MSVC AND EXISTS "${SPEKTRALAB_LENS_PREFIX}/lib/${component}.lib")
         set(archive "${SPEKTRALAB_LENS_PREFIX}/lib/${component}.lib")
-    else()
-        set(archive "${SPEKTRALAB_LENS_PREFIX}/lib/lib${component}.a")
     endif()
     if(NOT EXISTS "${archive}")
         message(FATAL_ERROR "Missing pinned lens dependency: ${archive}")
+    endif()
+    if(MSVC AND component STREQUAL "glib-2.0")
+        # GLib's Windows constructor and TLS callback live in an otherwise
+        # unreferenced object. Keep them so quarks/threads are initialized.
+        target_link_options(spk_lens INTERFACE "/WHOLEARCHIVE:${archive}")
     endif()
     target_link_libraries(spk_lens INTERFACE "${archive}")
 endforeach()

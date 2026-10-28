@@ -89,12 +89,12 @@ describe('white balance at decode (R2)', () => {
     sessionStore.setState({ hello, frameKind: 'raw' });
     setDecode((d) => ({ ...d, whiteBalance: 'Custom', temperature: 3200, tint: 0 }));
     expect(sessionStore.getState().undo).toHaveLength(1);
-    await vi.waitFor(() => expect(calls).toContain('redecode:{"white_balance":{"mode":"custom","temperature_k":3200,"tint":0}}'));
+    await vi.waitFor(() => expect(calls).toContain('redecode:{"white_balance":{"mode":"custom","temperature_k":3200,"tint":0},"raw_mode":"auto"}'));
     await vi.waitFor(() => expect(calls.indexOf('render:live')).toBeGreaterThan(calls.findIndex((c) => c.startsWith('redecode'))));
     calls.length = 0;
     undo();
     expect(sessionStore.getState().sidecar.decode.whiteBalance).toBe('As Shot');
-    await vi.waitFor(() => expect(calls).toContain('redecode:{"white_balance":{"mode":"as_shot"}}'));
+    await vi.waitFor(() => expect(calls).toContain('redecode:{"white_balance":{"mode":"as_shot"},"raw_mode":"auto"}'));
   });
 
   it('a raster frame is not re-decoded', async () => {

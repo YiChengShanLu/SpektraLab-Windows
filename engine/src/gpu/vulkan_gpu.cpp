@@ -467,6 +467,20 @@ public:
     BufferRef upload_file_backed(const void* data, size_t bytes, std::string& error) override {
         return upload_persistent(data, bytes, error);
     }
+    BufferRef make_persistent(BufferRef buffer, size_t bytes, std::string& error) override {
+        // Vulkan submissions finish before returning. An exact-sized plane can
+        // leave the scratch pool without a second full-resolution allocation.
+        if (buffer && bytes && buffer.get()->bytes == bytes) {
+            std::lock_guard<std::mutex> lock(buffers_mutex_);
+            if (!buffer.get()->persistent) {
+                buffer.get()->persistent = true;
+                ++audit_.persistent_allocations;
+            }
+            return buffer;
+        }
+        // Do not retain oversized scratch storage for the session's lifetime.
+        return Gpu::make_persistent(std::move(buffer), bytes, error);
+    }
     BufferRef borrow(void*, size_t, std::string& error) override {
         error = "Vulkan device-buffer input is not implemented; use spk_open with host pixels";
         return {};
@@ -886,6 +900,10 @@ private:
             Buffer* best = nullptr;
             for (Buffer* b : buffers_)
                 if (!b->persistent && b->refs == 0 && b->bytes >= bytes &&
+                    // Do not pin a full-resolution plane for a small LUT or
+                    // preview: that forces the next full-size stage to grow
+                    // the pool even though an appropriate plane was idle.
+                    b->bytes - bytes <= std::max(bytes, size_t(64) * 1024) &&
                     (!best || b->bytes < best->bytes)) best = b;
             if (best) {
                 best->refs = 1;
@@ -898,6 +916,20 @@ private:
                 }
                 update_high_water();
                 return BufferRef(this, best);
+            }
+            // A large-frame pool miss follows the first live preview. Its
+            // idle smaller planes cannot serve this allocation; reclaim them
+            // before growing, retaining reusable full planes and small LUTs.
+            if (bytes >= size_t(64) * 1024 * 1024) {
+                for (auto it = buffers_.begin(); it != buffers_.end();) {
+                    Buffer* b = *it;
+                    if (!b->persistent && b->refs == 0 && b->bytes >= size_t(1024) * 1024 &&
+                        b->bytes < bytes / 2) {
+                        it = buffers_.erase(it);
+                        destroy_buffer(b);
+                        delete b;
+                    } else ++it;
+                }
             }
         }
         auto b = std::make_unique<Buffer>();

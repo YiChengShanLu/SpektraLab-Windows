@@ -37,7 +37,7 @@ test('reopening one file after restart does not bring the previous roll back', a
   });
   await expect(page.locator('.thumb')).toHaveCount(1);
   await expect(page.locator('.thumb')).toContainText('new.ARW');
-  await expect(page.getByTestId('tier-badge')).toHaveText('full', { timeout: 20_000 });
+  await expect(page.getByTestId('camera-preview-badge')).toContainText('choose Solve', { timeout: 20_000 });
   expect(await state(page, 's.frames.map(f => f.path)')).toEqual(['/mock/Roll 01/new.ARW']);
 });
 
@@ -145,7 +145,7 @@ for (const scale of [100, 115, 130]) {
       return a.bottom <= b.top + strip.clientHeight && a.top >= b.top;
     }));
     expect(fits).toBe(true);
-    await page.screenshot({ path: `D:/SpektraLab-win/validation/feedback-20261012/layout-${scale}.png` });
+    await page.screenshot({ path: test.info().outputPath(`layout-${scale}.png`) });
   });
 }
 

@@ -149,7 +149,7 @@ interface Session {
 
 /** What `hello.methods` lists: every method `dispatch` answers. */
 const METHODS = [
-  'hello', 'ping', 'shutdown', 'cancel', 'params_schema', 'print_lut_catalog', 'memory_report', 'probe', 'thumbnail',
+  'hello', 'ping', 'shutdown', 'cancel', 'params_schema', 'print_lut_catalog', 'memory_report', 'memory_policy', 'probe', 'thumbnail',
   'open', 'open_pair', 'update_pair', 'redecode', 'close', 'set_params', 'get_params', 'solve', 'render', 'render_view', 'scene_latitude', 'overscan_geometry',
   'preview_stock_lut', 'progress', 'export_image', 'export_frame', 'export_cineon', 'render_proof', 'export_cube', 'export_di',
 ];
@@ -163,6 +163,9 @@ class HostError extends Error {
 }
 
 export class MockHost {
+  private memoryPolicy = { reserve_mb: 1024, working_set_mb: 4096, unlimited: false, allow_over_reserve: false,
+    decode_cache_gib: 8, process_bytes: 128 * 1024 ** 2, available_bytes: 8 * 1024 ** 3,
+    decode_cache_bytes: 0, decode_cache_entries: 0, decode_cache_hits: 0, decode_cache_misses: 0, decode_cache_path: '(mock)' };
   private sessions = new Map<string, Session>();
   private next = 1;
   private opts: Required<Omit<MockOptions, 'missing'>> & { missing?: (p: string) => boolean };
@@ -335,6 +338,9 @@ export class MockHost {
         return { result: { stocks: [] } };
       case 'memory_report':
         return { result: { persistent: { bytes: 0 }, sessions: [] } };
+      case 'memory_policy':
+        this.memoryPolicy = { ...this.memoryPolicy, ...(p.patch as object ?? {}) };
+        return { result: { ...this.memoryPolicy } };
       case 'probe': {
         const path = String(p.path ?? '');
         if (this.opts.missing?.(path)) throw new HostError('not_found', `${path}: no such file`);

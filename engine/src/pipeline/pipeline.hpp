@@ -447,6 +447,8 @@ public:
     };
 
     struct Stage {
+        // A stage consumes its chain so completed nodes can return their
+        // input planes to the pool before allocating later scratch.
         const char* name;
         /// **The class is a property of the code and does not vary between
         /// runs.** `demand` below is what varies, and the two must stay
@@ -456,7 +458,7 @@ public:
         /// reports both -- this, pinned by the harness, and the resolved
         /// `band_able`, which explains the run.
         StageClass klass;
-        bool (Pipeline::*run)(const Chain&, Chain&, std::string&);
+        bool (Pipeline::*run)(Chain, Chain&, std::string&);
         /// Non-null exactly for `Neighbourhood` stages. Called once per run,
         /// before any strip executes, because the answer decides the plan's
         /// crossings -- a demand consulted mid-run would be a crossing chosen
@@ -474,18 +476,18 @@ public:
     // two paths' sequences comparable, and the drift witnesses in
     // `strip_executor.py` exist because they are still two encodings of one
     // order.
-    bool film_scale_and_expose(const Chain& in, Chain& out, std::string& error);
-    bool film_boost(const Chain& in, Chain& out, std::string& error);
-    bool film_overscan(const Chain& in, Chain& out, std::string& error);
-    bool film_blurs(const Chain& in, Chain& out, std::string& error);
-    bool film_log_and_curves(const Chain& in, Chain& out, std::string& error);
-    bool film_couplers(const Chain& in, Chain& out, std::string& error);
-    bool film_grain(const Chain& in, Chain& out, std::string& error);
-    bool print_spectral(const Chain& in, Chain& out, std::string& error);
-    bool print_glare(const Chain& in, Chain& out, std::string& error);
-    bool print_linear(const Chain& in, Chain& out, std::string& error);
-    bool print_scan_finish(const Chain& in, Chain& out, std::string& error);
-    bool print_output(const Chain& in, Chain& out, std::string& error);
+    bool film_scale_and_expose(Chain in, Chain& out, std::string& error);
+    bool film_boost(Chain in, Chain& out, std::string& error);
+    bool film_overscan(Chain in, Chain& out, std::string& error);
+    bool film_blurs(Chain in, Chain& out, std::string& error);
+    bool film_log_and_curves(Chain in, Chain& out, std::string& error);
+    bool film_couplers(Chain in, Chain& out, std::string& error);
+    bool film_grain(Chain in, Chain& out, std::string& error);
+    bool print_spectral(Chain in, Chain& out, std::string& error);
+    bool print_glare(Chain in, Chain& out, std::string& error);
+    bool print_linear(Chain in, Chain& out, std::string& error);
+    bool print_scan_finish(Chain in, Chain& out, std::string& error);
+    bool print_output(Chain in, Chain& out, std::string& error);
 
     /// §7's **one policy call site**, called from exactly one place
     /// (`strip_plan`). RFC-020's body is constant: the caller's requested
@@ -597,7 +599,7 @@ private:
     /// is where a band first reaches a node, and where a pitch taken from one
     /// would first bend every grain size and blur radius in the picture.
     bool film_prefix(const Image& in, const FrameShape& frame, Image& cur, std::string& error);
-    bool film_segment(const Image& in, Image& out, std::string& error);
+    bool film_segment(Image in, Image& out, std::string& error);
     /// The print side's split. Its prefix is the enlarger's live-mutable
     /// constants, which are host constants rather than pixels, and its segment
     /// is dimension-preserving from end to end -- so the strips cut the
@@ -662,7 +664,7 @@ private:
     bool node_halation(const Image& in, Image& out, std::string& error);
     bool node_expose_log(const Image& in, Image& out, std::string& error);
     bool node_film_curves(const Image& in, Image& out, std::string& error);
-    bool node_dir_couplers(const Image& cmy, const Image& log_raw, Image& out, std::string& error);
+    bool node_dir_couplers(Image cmy, const Image& log_raw, Image& out, std::string& error);
     bool node_grain(const Image& in, Image& out, std::string& error);
     /// The grain model itself; `node_grain` is this plus RFC-025's strength.
     bool grain_realise(const Image& in, Image& out, std::string& error);

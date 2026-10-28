@@ -50,6 +50,11 @@ struct Metadata {
 };
 
 enum class FileKind { Raw, Tiff, Jpeg, Png, Heic, Exr, Unknown };
+// LibRaw flip bits describe output-to-sensor coordinates, including mirrors.
+constexpr int raw_exif_orientation(int flip) {
+    constexpr int orientations[] = {1, 2, 4, 3, 5, 8, 6, 7};
+    return flip >= 0 && flip < 8 ? orientations[flip] : 1;
+}
 const char* kind_name(FileKind kind);
 FileKind sniff_kind(const std::filesystem::path& path);
 
@@ -66,6 +71,7 @@ struct FloatImage {
     std::vector<float> rgb;
     std::optional<spk::io::RawDecodeTimings> raw_timings;
     std::optional<spk::io::RawMetadata> raw_metadata;
+    bool decode_cache_hit = false;
 };
 
 struct Rgba8 {
@@ -75,7 +81,7 @@ struct Rgba8 {
 
 // The frame the engine develops: linear ProPhoto, orientation applied.
 struct DecodeOptions {
-    std::string raw_mode = "compatible16";   // or "headroom"
+    std::string raw_mode = "compatible16";   // explicit legacy default; GUI opts into auto
     // R2: a custom white balance at decode (RAW, both decode modes).
     std::optional<double> temperature_k, tint;
     bool lens_correction = false;
@@ -84,7 +90,7 @@ struct DecodeOptions {
 // cannot be honoured for this file.
 constexpr const char* kUnsupportedPrefix = "unsupported: ";
 bool decode_linear_prophoto(const std::filesystem::path& path, const DecodeOptions& options,
-                            FloatImage& out, Probe& probe, std::string& error);
+                           FloatImage& out, Probe& probe, std::string& error, bool cache_write = true);
 
 // A display thumbnail, sRGB 8-bit, orientation applied, long edge <= long_edge.
 // RAW: the embedded preview when there is one, else a half-size decode.

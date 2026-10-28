@@ -1,13 +1,15 @@
 // CurveEditor.tsx — `Controls/CurveEditor.swift`: click to add a point, drag
-// to move it, double-click (or drag off the plot) to remove it. The output
+// to move it, right-click (or drag off the plot) to remove it; double-click
+// resets the channel, matching the Mac. The output
 // histogram sits behind the curve.
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import * as ContextMenu from '@radix-ui/react-context-menu';
 import { type CurveChannel, evaluateCurve, insertPoint, movePoint, removePoint } from '@shared/adjustments';
-import { beginGesture, setAdjustments, shownAdjustments, useSession } from '../state/session';
+import { beginGesture, endGesture, setAdjustments, shownAdjustments, useSession } from '../state/session';
 import { useOutput } from '../canvas/output';
 import { computeHistogram } from '../canvas/histogram';
-import { t } from '../i18n';
+import { t, tz } from '../i18n';
 
 const S = 200;
 const STROKE: Record<CurveChannel, string> = {
@@ -23,13 +25,17 @@ export function CurveEditor({ channel }: { channel: CurveChannel }) {
   const out = useOutput();
   const ref = useRef<SVGSVGElement>(null);
   const drag = useRef<number | null>(null);
+  const lastDown = useRef({ time: -Infinity, x: 0, y: 0 });
   const [readout, setReadout] = useState<string>('');
+  const [contextPoint, setContextPoint] = useState(-1);
+  const finish = () => { if (drag.current !== null) { drag.current = null; endGesture(); } };
+  useEffect(() => () => { if (drag.current !== null) endGesture(); }, []);
 
   const at = (e: React.PointerEvent) => {
     const r = ref.current!.getBoundingClientRect();
     return { x: (e.clientX - r.left) / r.width, y: 1 - (e.clientY - r.top) / r.height };
   };
-  const set = (fn: (c: typeof curve) => typeof curve) => setAdjustments((a) => ({ ...a, curves: { ...a.curves, [channel]: fn(a.curves[channel]) } }));
+  const set = (fn: (c: typeof curve) => typeof curve, coalesce = false) => setAdjustments((a) => ({ ...a, curves: { ...a.curves, [channel]: fn(a.curves[channel]) } }), { coalesce });
 
   const near = (p: { x: number; y: number }) => {
     let best = -1;
@@ -58,16 +64,22 @@ export function CurveEditor({ channel }: { channel: CurveChannel }) {
 
   return (
     <div>
-      <svg
+      <ContextMenu.Root><ContextMenu.Trigger asChild><svg
         ref={ref}
         className="plot"
         viewBox={`0 0 ${S} ${S}`}
         style={{ aspectRatio: '1', cursor: 'crosshair', touchAction: 'none' }}
         data-testid="curve-editor"
+        aria-label={`${channel} ${t('sectionCurve')}`}
+        onContextMenu={(e) => setContextPoint(near(at(e as unknown as React.PointerEvent)))}
         onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          const previous = lastDown.current;
+          lastDown.current = { time: e.timeStamp, x: e.clientX, y: e.clientY };
+          if (e.timeStamp - previous.time < 500 && Math.hypot(e.clientX - previous.x, e.clientY - previous.y) < 6) return;
           (e.target as Element).setPointerCapture(e.pointerId);
           const p = at(e);
-          beginGesture();
+          beginGesture(true);
           let i = near(p);
           if (i < 0) {
             const r = insertPoint(curve, p.x, p.y);
@@ -89,11 +101,11 @@ export function CurveEditor({ channel }: { channel: CurveChannel }) {
           drag.current = null;
           // Dragged well off the plot: the point goes.
           if (i != null && (p.y < -0.1 || p.y > 1.1)) set((c) => removePoint(c, i));
+          endGesture();
         }}
-        onDoubleClick={(e) => {
-          const i = near(at(e as unknown as React.PointerEvent));
-          if (i >= 0) set((c) => removePoint(c, i));
-        }}
+        onPointerCancel={finish}
+        onLostPointerCapture={finish}
+        onDoubleClick={() => set(() => ({ points: [[0, 0], [1, 1]] }), true)}
       >
         {[0.25, 0.5, 0.75].map((g) => (
           <g key={g} stroke="var(--plot-grid)" strokeWidth={0.5}>
@@ -105,9 +117,21 @@ export function CurveEditor({ channel }: { channel: CurveChannel }) {
         <line x1={0} y1={S} x2={S} y2={0} stroke="var(--plot-mid-grey)" strokeWidth={0.5} />
         <path d={line} fill="none" stroke={STROKE[channel]} strokeWidth={1.4} />
         {curve.points.map(([x, y], i) => (
-          <circle key={i} cx={x * S} cy={S - y * S} r={3.5} fill="var(--card)" stroke={STROKE[channel]} strokeWidth={1.2} />
+          <circle key={i} cx={x * S} cy={S - y * S} r={3.5} fill="var(--card)" stroke={STROKE[channel]} strokeWidth={1.2}
+            role="button" tabIndex={0} aria-label={`${tz('Curve point', '曲线控制点')} ${i + 1}: ${Math.round(x * 255)}, ${Math.round(y * 255)}`}
+            onKeyDown={(e) => {
+              if (['Delete', 'Backspace'].includes(e.key)) { e.preventDefault(); e.stopPropagation(); beginGesture(); set((c) => removePoint(c, i)); }
+              if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+                e.preventDefault(); e.stopPropagation(); beginGesture(); const step = e.shiftKey ? .05 : 1 / 255;
+                set((c) => movePoint(c, i, x + (e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0), y + (e.key === 'ArrowDown' ? -step : e.key === 'ArrowUp' ? step : 0)));
+              }
+            }} />
         ))}
-      </svg>
+      </svg></ContextMenu.Trigger><ContextMenu.Portal><ContextMenu.Content className="menu" alignOffset={5}>
+        <ContextMenu.Item className="menu-item" disabled={contextPoint <= 0 || contextPoint >= curve.points.length - 1}
+          onSelect={() => { beginGesture(); set((c) => removePoint(c, contextPoint)); }}>{tz('Delete control point', '删除控制点')}</ContextMenu.Item>
+        <ContextMenu.Item className="menu-item" onSelect={() => { beginGesture(); set(() => ({ points: [[0, 0], [1, 1]] })); }}>{tz('Reset channel', '重置当前通道')}</ContextMenu.Item>
+      </ContextMenu.Content></ContextMenu.Portal></ContextMenu.Root>
       <div className="caption num">{readout || ' '}</div>
     </div>
   );

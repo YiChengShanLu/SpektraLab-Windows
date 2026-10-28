@@ -14,7 +14,7 @@ endif()
 set_target_properties(spk_input_lcms PROPERTIES IMPORTED_LOCATION "${lcms_library}"
     INTERFACE_INCLUDE_DIRECTORIES "${SPEKTRALAB_INPUT_CODEC_PREFIX}/include")
 add_library(spk_input_codecs INTERFACE)
-target_link_libraries(spk_input_codecs INTERFACE OpenEXR::OpenEXR heif spk_input_lcms)
+target_link_libraries(spk_input_codecs INTERFACE OpenEXR::OpenEXR heif spk_input_lcms spk_codec_zlib)
 file(GLOB input_notices "${SPEKTRALAB_INPUT_CODEC_PREFIX}/share/spektralab-input-codecs/licenses/*")
 if(NOT input_notices)
     message(FATAL_ERROR "Input codec notices missing: rerun engine/setup-input-codecs.py install step")

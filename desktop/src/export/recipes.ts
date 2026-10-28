@@ -23,6 +23,8 @@ export interface ExportRecipe {
   /** Absent in older recipes: uncompressed and no extra preview page. */
   tiffCompression?: 'none' | 'lzw';
   embedsPreview?: boolean;
+  /** Absent/null opens nothing; an empty path uses the system default app. */
+  openWith?: { path: string } | null;
   /** 0 = the frame's own size. */
   longEdge: number;
   folder: { kind: 'besideOriginal' } | { kind: 'fixed'; path: string };
@@ -116,6 +118,7 @@ export function decodeRecipes(raw: unknown): ExportRecipe[] {
       id: typeof o.id === 'string' ? o.id : `r${out.length}`,
       ...(o.tiffCompression !== undefined ? { tiffCompression: o.tiffCompression === 'lzw' ? 'lzw' : 'none' } : {}),
       ...(o.embedsPreview !== undefined ? { embedsPreview: o.embedsPreview === true } : {}),
+      ...(o.openWith !== undefined ? { openWith: o.openWith && typeof o.openWith.path === 'string' ? { path: o.openWith.path } : null } : {}),
       naming: {
         order: Array.isArray(n?.order) ? [...n.order.filter((t) => NAME_TOKENS.includes(t)), ...NAME_TOKENS.filter((t) => !n.order.includes(t))] : [...NAME_TOKENS],
         tokens: (() => {

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 using namespace spkhost;
 void require(bool b,const char* text){if(!b)throw std::runtime_error(text);}
@@ -24,17 +25,28 @@ int main(int argc,char**argv) {
         std::ofstream(dir/"test.xml")<<R"(<lensdatabase version="2">
         <mount><name>Fixture mount</name></mount>
         <camera><maker>Test</maker><model>Fixture Camera</model><mount>Fixture mount</mount><cropfactor>1</cropfactor></camera>
+        <camera><maker>Other</maker><model>Fixture Camera</model><mount>Fixture mount</mount><cropfactor>1.5</cropfactor></camera>
         <lens><maker>Test</maker><model>Fixture Lens 50mm f/4</model><mount>Fixture mount</mount><cropfactor>1</cropfactor>
         <calibration><distortion model="poly3" focal="50" k1="-0.15"/>
         <tca model="linear" focal="50" kr="1.015" kb="0.985"/>
         <vignetting model="pa" focal="50" aperture="4" distance="1000" k1="-0.25" k2="0.02" k3="0"/>
+        </calibration></lens>
+        <lens><maker>Test</maker><model>Gain Lens 50mm f/4</model><mount>Fixture mount</mount><cropfactor>1</cropfactor>
+        <calibration><vignetting model="pa" focal="50" aperture="4" distance="1000" k1="-0.25" k2="0.02" k3="0"/>
         </calibration></lens></lensdatabase>)";
         lens_database(dir);
         Probe p;p.kind=FileKind::Raw;p.width=97;p.height=65;
-        p.metadata.model="Fixture Camera";p.metadata.lens="Fixture Lens 50mm f/4";
+        p.metadata.make="Test";p.metadata.model="Fixture Camera";p.metadata.lens="Fixture Lens 50mm f/4";
         p.metadata.focal_mm=50;p.metadata.aperture=4;
         auto info=inspect_lens(p);
         require(info.available&&info.distortion&&info.tca&&info.vignetting,"calibration matching/components");
+        auto ambiguous=p;ambiguous.metadata.make.clear();
+        require(!inspect_lens(ambiguous).available,"ambiguous camera makers must not be guessed");
+        auto invalid=p;invalid.metadata.focal_mm=std::numeric_limits<double>::quiet_NaN();
+        require(!inspect_lens(invalid).available,"non-finite focal length rejected");
+        invalid=p;invalid.metadata.aperture=0;
+        auto partial=inspect_lens(invalid);
+        require(partial.available&&partial.distortion&&partial.tca&&!partial.vignetting,"invalid aperture must not claim vignetting");
         require(info.focus_distance_assumed,"missing EXIF focus distance must be disclosed");
         p.metadata.extra_exif[0x9206]={5,1,{5,0,0,0,1,0,0,0}};
         info=inspect_lens(p);require(!info.focus_distance_assumed&&info.focus_distance_m==5,"EXIF distance");
@@ -57,6 +69,16 @@ int main(int argc,char**argv) {
             probe.width=input.width;probe.height=input.height;probe.metadata.orientation=o;
             require(correct_lens(input,probe,error),error.c_str());
             for(size_t i=0;i<input.rgb.size();++i)require(std::abs(input.rgb[i]-expected.rgb[i])<2e-5f,"EXIF orientation equivariance");
+        }
+        auto gain_probe=p;gain_probe.metadata.lens="Gain Lens 50mm f/4";
+        auto gain_info=inspect_lens(gain_probe);
+        require(gain_info.available&&gain_info.vignetting&&!gain_info.distortion&&!gain_info.tca,"gain-only profile matching");
+        auto gain=original;gain.raw_metadata->camera_to_output.fill(0);
+        for(size_t i=0;i<gain.rgb.size();i+=3){gain.rgb[i]=-.25f;gain.rgb[i+1]=.5f;gain.rgb[i+2]=2.f;}
+        require(correct_lens(gain,gain_probe,error),error.c_str());
+        for(size_t i=0;i<gain.rgb.size();i+=3) {
+            require(std::abs(gain.rgb[i]+.5f*gain.rgb[i+1])<1e-6f&&std::abs(gain.rgb[i+2]-4*gain.rgb[i+1])<1e-6f,"vignetting-only correction changed colour ratios");
+            require(gain.rgb[i]<0&&gain.rgb[i+2]>=2,"vignetting-only correction clipped float range");
         }
         auto missing=p;missing.metadata.lens="Uncatalogued";
         require(!inspect_lens(missing).available,"unmatched lens must not claim support");

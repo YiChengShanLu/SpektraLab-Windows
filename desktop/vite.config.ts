@@ -9,7 +9,9 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   resolve: { alias: { '@shared': resolve(__dirname, 'src/shared') } },
-  server: { port: 5173, strictPort: true, host: '127.0.0.1' },
+  // Cargo replaces/locks executables while linking on Windows. Vite owns
+  // only the web frontend; Tauri watches the native sources independently.
+  server: { port: 5173, strictPort: true, host: '127.0.0.1', watch: { ignored: ['**/src-tauri/**'] } },
   envPrefix: ['VITE_', 'TAURI_ENV_'],
   build: {
     target: 'es2022',

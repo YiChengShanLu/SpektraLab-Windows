@@ -117,6 +117,8 @@ export function SettingsDialog() {
                   if (sid) void host().setParams(sid, { preview_long_edge: v }).then(() => requestPrint());
                 }}
               />
+              <ToggleRow label={tz('Fast stock preview', '快速相纸预览')} on={st.fastStockPreview} onChange={(v) => set('fastStockPreview', v)} />
+              <div className="caption">{tz('Show a LUT preview of the existing negative while the selected paper is reprinted. The completed render replaces it automatically.', '切换相纸时，先用已有负片显示 LUT 预览，完整重印结果会自动替换它。')}</div>
               <div className="caption">
                 {tz(
                   "The resolution every interactive edit renders at. The frame's own resolution is rendered separately once an edit settles, so this trades responsiveness while dragging against nothing in the finished picture.",

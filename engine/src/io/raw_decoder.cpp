@@ -439,9 +439,10 @@ bool decode_raw_headroom(const std::filesystem::path& source, const std::array<f
             }
             raw->imgdata.params.use_camera_wb = 0;
         }
-        // LibRaw's Ignore mode prevents WB multipliers above one, but does not
-        // reconstruct sensor saturation and still uses uint16 intermediates.
-        raw->imgdata.params.highlight = 1;
+        // Max-normalised WB retains linear headroom. Blend saturated channels
+        // before the colour matrix so clipped whites do not become magenta.
+        // This changes only highlight colour; it cannot recover sensor detail.
+        raw->imgdata.params.highlight = 2;
         DecodedRaw decoded;
         decoded.timings.openmp_enabled = raw_openmp_enabled();
         decoded.timings.workers = thread_scope.workers();
@@ -507,6 +508,14 @@ bool decode_raw_headroom(const std::filesystem::path& source, const std::array<f
         error = "RAW headroom decode: unknown decoder exception";
         return false;
     }
+}
+
+bool decode_raw_auto(const std::filesystem::path& source, const std::array<float, 4>* user_mul,
+                     DecodedRaw& out, std::string& error) {
+    if (decode_raw_headroom(source, user_mul, out, error)) return true;
+    if (error.rfind("RAW headroom: only conventional ", 0) != 0 &&
+        error.rfind("RAW headroom: a nonstandard Bayer pattern", 0) != 0) return false;
+    return decode_raw_compatible(source, user_mul, out, error);
 }
 
 }  // namespace spk::io

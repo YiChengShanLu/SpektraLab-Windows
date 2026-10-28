@@ -1,7 +1,7 @@
 // A user-initiated release check, never an installer. The Mac release number
 // alone says nothing about an available Windows build.
-const REPO = 'https://github.com/JamesQiu2005/SpektraLab';
-export const RELEASE_API = 'https://api.github.com/repos/JamesQiu2005/SpektraLab/releases?per_page=30';
+const REPO = 'https://github.com/YiChengShanLu/SpektraLab-Windows';
+export const RELEASE_API = 'https://api.github.com/repos/YiChengShanLu/SpektraLab-Windows/releases?per_page=30';
 export type UpdateStatus = { kind: 'available' | 'current'; version: string; url: string; asset: string }
   | { kind: 'unavailable' | 'failed'; reason: string };
 

@@ -6,7 +6,7 @@
 // Click opens (and collapses the picked set); Ctrl/Cmd-click toggles one
 // frame in the set and leaves the canvas where it is.
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronLeft, ChevronRight } from '../controls/icons';
 import { click, moveFrame, saveFrameOrder, selectRelative, sessionStore, useSession } from '../state/session';
 import { installFrameDrag } from './frameDrag';
@@ -23,7 +23,12 @@ export function Filmstrip() {
   const saved = useSession((s) => s.savedGeometry);
   const batch = useSession((s) => s.batchExporting);
   const strip = useRef<HTMLDivElement>(null);
-  const [, visibleChanged] = useState(0);
+  const [visible, setVisible] = useState<Set<string>>(new Set());
+  const [widths, setWidths] = useState<Record<string, number>>({});
+  const pickedSet = new Set(picked);
+  const measured = useCallback((path: string, width: number) => {
+    setWidths((old) => old[path] === width ? old : { ...old, [path]: width });
+  }, []);
   useEffect(() => strip.current ? installFrameDrag(strip.current, {
     enabled: () => !sessionStore.getState().batchExporting,
     reorder: moveFrame,
@@ -37,7 +42,7 @@ export function Filmstrip() {
     const publish = () => {
       if (!active) return;
       thumbs.setFilmstripPaths(nearby);
-      visibleChanged((value) => value + 1);
+      setVisible(new Set(nearby));
     };
     const cells = Array.from(root.querySelectorAll<HTMLElement>('.thumb[data-path]'));
     // Keep only the visible strip and a few neighbouring cells eligible. A
@@ -91,14 +96,14 @@ export function Filmstrip() {
         {frames.map((f) => (
           <div
             key={f.path}
-            className={'thumb' + (f.path === selection ? ' open' : '') + (picked.includes(f.path) ? ' picked' : '')}
+            className={'thumb' + (f.path === selection ? ' open' : '') + (pickedSet.has(f.path) ? ' picked' : '')}
             onClick={(e) => click(f.path, e.ctrlKey || e.metaKey)}
             draggable={false}
-            style={{ touchAction: 'none' }}
+            style={{ touchAction: 'none', width: widths[f.path] ?? 120 }}
             title={f.name}
             data-path={f.path}
           >
-            <Thumb path={f.path} geometry={f.path === selection ? live : (saved[f.path] ?? GEOMETRY_DEFAULT)} source="filmstrip" />
+            {visible.has(f.path) && <Thumb path={f.path} geometry={f.path === selection ? live : (saved[f.path] ?? GEOMETRY_DEFAULT)} source="filmstrip" onWidth={measured} />}
             <span className="thumb-name">{f.name}</span>
           </div>
         ))}
@@ -116,8 +121,9 @@ const thumbVersion = () => version;
 
 const CELL_H = 104;
 
-export function Thumb({ path, geometry, height = CELL_H, source = 'general' }: {
+export function Thumb({ path, geometry, height = CELL_H, source = 'general', onWidth }: {
   path: string; geometry: Geometry; height?: number; source?: 'general' | 'filmstrip';
+  onWidth?: (path: string, width: number) => void;
 }) {
   // Export-page cells are mounted without Filmstrip, so each consumer owns its
   // subscription instead of relying on the strip to happen to re-render it.
@@ -130,7 +136,7 @@ export function Thumb({ path, geometry, height = CELL_H, source = 'general' }: {
     const i = new Image();
     i.onload = () => setImg(i);
     i.src = url;
-    return () => { i.onload = null; };
+    return () => { i.onload = null; i.src = ''; };
   }, [url]);
   useEffect(() => {
     const c = ref.current;
@@ -138,6 +144,7 @@ export function Thumb({ path, geometry, height = CELL_H, source = 'general' }: {
     const plan = thumbnailGeometryPlan(thumbs.isFilmCanvas(path) ? GEOMETRY_DEFAULT : geometry, { width: img.naturalWidth, height: img.naturalHeight }, height);
     c.width = plan.width;
     c.height = plan.height;
+    onWidth?.(path, plan.width);
     const ctx = c.getContext('2d')!;
     ctx.setTransform(...plan.imageTransform);
     ctx.drawImage(img, 0, 0);
@@ -153,7 +160,7 @@ export function Thumb({ path, geometry, height = CELL_H, source = 'general' }: {
       ctx.closePath();
       ctx.fill('evenodd');
     }
-  }, [img, geometry, height, path]);
+  }, [img, geometry, height, path, onWidth]);
   if (!url) return <div className="placeholder" />;
   return <canvas ref={ref} />;
 }

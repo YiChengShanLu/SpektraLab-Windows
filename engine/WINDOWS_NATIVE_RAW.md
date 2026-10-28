@@ -92,8 +92,11 @@ The experimental policy accepts conventional three-colour 2×2 Bayer data with
 square pixels, without pre-applied WB or special Fuji rotation. It rejects
 sRAW, X-Trans, Foveon, floating-point RAW and other unsupported layouts.
 
-LibRaw uses `highlight=1`, normalising WB by its largest component before
-uint16 demosaicing. The host captures LibRaw's actual camera-to-ProPhoto
+LibRaw uses `highlight=2`, normalising WB by its largest component before
+uint16 demosaicing and blending saturated highlight chroma before colour
+conversion. This prevents false magenta on clipped neutral highlights without
+discarding the expanded linear output range. It cannot recover lost sensor
+detail. The host captures LibRaw's actual camera-to-ProPhoto
 matrix and evaluates it without the uint16 output clipping step. It restores
 the compatibility exposure convention with `1 / min(applied WB)`, including
 the second green component, and retains fractional, negative and above-one

@@ -19,6 +19,7 @@
 #include "stb_image.h"
 #include "tiff_ifd.hpp"
 #include "white_balance.hpp"
+#include "decode_cache.hpp"
 
 namespace spkhost {
 
@@ -699,15 +700,6 @@ static std::string trimmed(const char* s, size_t n) {
     return out;
 }
 
-static int flip_to_orientation(int flip) {
-    switch (flip) {
-        case 3: return 3;
-        case 5: return 8;
-        case 6: return 6;
-        default: return 1;
-    }
-}
-
 static void raw_metadata(LibRaw& raw, Metadata& meta) {
     const auto& id = raw.imgdata.idata;
     const auto& other = raw.imgdata.other;
@@ -737,7 +729,7 @@ static void raw_metadata(LibRaw& raw, Metadata& meta) {
         std::strftime(buf, sizeof buf, "%Y:%m:%d %H:%M:%S", &tm);
         meta.datetime_original = buf;
     }
-    meta.orientation = flip_to_orientation(raw.imgdata.sizes.flip);
+    meta.orientation = raw_exif_orientation(raw.imgdata.sizes.flip);
     double t = 0, tint = 0;
     if (as_shot_temperature_tint(raw, t, tint)) {
         meta.as_shot_temperature_k = t;
@@ -803,8 +795,9 @@ bool probe_file(const fs::path& path, Probe& out, std::string& error) {
 }
 
 bool decode_linear_prophoto(const fs::path& path, const DecodeOptions& options, FloatImage& out,
-                            Probe& probe, std::string& error) {
+                            Probe& probe, std::string& error, bool cache_write) {
     if (!probe_file(path, probe, error)) return false;
+    out.decode_cache_hit = false;
     const bool custom_wb = options.temperature_k.has_value();
     if (custom_wb && probe.kind != FileKind::Raw) {
         error = std::string(kUnsupportedPrefix) + "white balance at decode applies to RAW files only";
@@ -814,8 +807,11 @@ bool decode_linear_prophoto(const fs::path& path, const DecodeOptions& options, 
         error=std::string(kUnsupportedPrefix)+"lens correction applies to RAW sources only";
         return false;
     }
+    if (decode_cache::preflight) decode_cache::preflight(probe);
     if (probe.kind == FileKind::Heic || probe.kind == FileKind::Exr) return decode_extra(path, probe.kind, out, probe, error);
     if (probe.kind == FileKind::Raw) {
+        const auto cache_key = decode_cache::key(path, options);
+        if (decode_cache::load(cache_key, out, probe)) return true;
         spk::io::DecodedRaw decoded;
         std::array<float, 4> mul{};
         if (custom_wb) {
@@ -826,7 +822,9 @@ bool decode_linear_prophoto(const fs::path& path, const DecodeOptions& options, 
                 return false;
             }
         }
-        const bool ok = options.raw_mode == "headroom"
+        const bool ok = options.raw_mode == "auto"
+                            ? spk::io::decode_raw_auto(path, custom_wb ? &mul : nullptr, decoded, error)
+                            : options.raw_mode == "headroom"
                             ? spk::io::decode_raw_headroom(path, custom_wb ? &mul : nullptr, decoded, error)
                             : spk::io::decode_raw_compatible(path, custom_wb ? &mul : nullptr, decoded, error);
         if (!ok) return false;
@@ -836,6 +834,9 @@ bool decode_linear_prophoto(const fs::path& path, const DecodeOptions& options, 
         out.raw_timings = decoded.timings;
         out.raw_metadata = std::move(decoded.metadata);
         if(options.lens_correction && !correct_lens(out,probe,error))return false;
+        out.decode_cache_hit = false;
+        // Do not save pixels if the source changed while LibRaw was reading it.
+        if (cache_write && cache_key == decode_cache::key(path, options)) decode_cache::save(cache_key, out, probe);
         return true;
     }
     Raster r;
@@ -913,7 +914,7 @@ bool thumbnail(const fs::path& path, uint32_t long_edge, Rgba8& out, std::string
     if (probe.kind == FileKind::Raw) {
         auto raw = std::make_unique<LibRaw>(LIBRAW_OPTIONS_NO_DATAERR_CALLBACK);
         if (!raw_open(*raw, path, error)) return false;
-        const int orientation = flip_to_orientation(raw->imgdata.sizes.flip);
+    const int orientation = raw_exif_orientation(raw->imgdata.sizes.flip);
         std::vector<float> rgb;
         uint32_t w = 0, h = 0;
         if (raw->unpack_thumb() == LIBRAW_SUCCESS) {

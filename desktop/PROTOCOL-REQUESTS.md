@@ -49,7 +49,7 @@ hands the pixels to `write_image`.
 visible notice when the frame has a crop or Post-Dev edits that the file will
 not carry.
 
-## R2 [landed 950dd47 — white balance + redecode; lens correction declined: LibRaw has no lens profiles] — Camera white balance and lens correction at decode
+## R2 [landed — white balance/redecode; Windows Lensfun integration added locally] — Camera white balance and lens correction at decode
 
 **Why.** Camera Temperature / Tint / Lens Correction are *decode* settings on
 macOS (`DecodeSettings`, re-decode then render). The protocol's `open.decode`
@@ -62,8 +62,14 @@ and `lens_correction?: bool`. `probe` / `open` metadata gains
 `as_shot: {temperature_k, tint}` so the rail can show the As Shot values.
 Return `unsupported` for any key the decoder cannot honour.
 
-**Until it lands** the Temperature/Tint/Lens Correction rows are shown disabled
-with the reason "this host cannot change white balance at decode".
+**Current Windows implementation:** LibRaw handles white balance; bundled Lensfun
+profiles handle distortion, camera-channel TCA and vignetting when the camera/lens
+match is unambiguous. Metadata reports supported components, profile, auto scale,
+and whether focus distance was assumed. Unmatched profiles remain unavailable.
+New photographs use `raw_mode:"auto"` (expanded linear RGB where supported,
+compatible decoder otherwise); old Windows edits retain their original decoder.
+`hello.source_formats` separately negotiates high-precision original previews.
+See `HOST-PROTOCOL.md` for the current contract and decoder limits.
 
 ## R3 [landed 2e6f1ed] — `thumbnail` honours EXIF orientation
 

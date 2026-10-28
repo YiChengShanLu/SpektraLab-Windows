@@ -36,12 +36,14 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <psapi.h>
 #endif
 
 #include "image_io.hpp"
 #include "lens_correction.hpp"
 #include "pair_source.hpp"
 #include "white_balance.hpp"
+#include "decode_cache.hpp"
 #include "json.hpp"
 #include "output.hpp"
 #include "platform.hpp"
@@ -426,7 +428,7 @@ Json m_hello(const Request&) {
     r.set("backend", std::move(backend));
     r.set("capabilities", std::move(caps));
     Json methods = Json::array();
-    for (const char* m : {"hello", "ping", "shutdown", "params_schema", "print_lut_catalog", "memory_report",
+    for (const char* m : {"hello", "ping", "shutdown", "params_schema", "print_lut_catalog", "memory_report", "memory_policy",
                           "probe", "thumbnail", "open", "redecode", "close", "set_params", "get_params", "solve", "render",
                           "scene_latitude", "overscan_geometry", "preview_stock_lut", "cancel", "progress", "open_pair", "update_pair",
                           "export_image", "export_cube", "export_di", "export_cineon", "write_image", "render_view", "export_frame", "render_proof", "render_source", "pick_neutral"})
@@ -434,6 +436,8 @@ Json m_hello(const Request&) {
     r.set("methods", std::move(methods));
     Json view_formats = Json::array(); view_formats.push(str("rgba8")); view_formats.push(str("rgba16"));
     r.set("view_formats", std::move(view_formats));
+    Json source_formats = Json::array(); source_formats.push(str("rgba8")); source_formats.push(str("rgba16"));
+    r.set("source_formats", std::move(source_formats));
     Json spaces = Json::array();
     for (const char* space : {"sRGB", "display-p3", "prophoto", "adobe-rgb", "rec2020"}) spaces.push(str(space));
     r.set("export_spaces", std::move(spaces));
@@ -446,6 +450,87 @@ Json m_hello(const Request&) {
 Json m_params_schema(const Request&) { need_engine(); return parse_json(spk_params_schema(g.engine)); }
 Json m_print_lut_catalog(const Request&) { need_engine(); return parse_json(spk_print_lut_catalog(g.engine)); }
 Json m_memory_report(const Request&) { need_engine(); return parse_json(spk_memory_report(g.engine)); }
+
+struct MemoryPolicy {
+    uint64_t reserve_mb = 1024, working_set_mb = 4096, decode_cache_gib = 8;
+    bool unlimited = false, allow_over_reserve = false;
+} memory_policy;
+thread_local bool memory_override = false;
+
+std::pair<uint64_t,uint64_t> process_memory() {
+    uint64_t used = 0, available = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX status{}; status.dwLength=sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) available=std::min(status.ullAvailPhys,status.ullAvailPageFile);
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),sizeof(counters))) used=counters.PrivateUsage;
+#endif
+    return {used,available};
+}
+Json policy_json(const MemoryPolicy& p) {
+    Json out=Json::object();
+    out.set("reserve_mb",number(double(p.reserve_mb)));out.set("working_set_mb",number(double(p.working_set_mb)));
+    out.set("decode_cache_gib",number(double(p.decode_cache_gib)));out.set("unlimited",Json(p.unlimited));out.set("allow_over_reserve",Json(p.allow_over_reserve));
+    return out;
+}
+MemoryPolicy patched_policy(const Json& patch, MemoryPolicy next) {
+    for (const auto& [key,value]:patch.fields()) {
+        if (key=="unlimited" || key=="allow_over_reserve") {
+            if(!value.is_bool())throw HostError{"bad_request",key+" must be boolean"};
+            (key=="unlimited"?next.unlimited:next.allow_over_reserve)=value.as_bool();
+        } else {
+            const double n=value.as_double(-1);
+            const double maximum=key=="decode_cache_gib"?64:1048576;
+            if(!value.is_number()||!std::isfinite(n)||n<0||n>maximum||n!=std::floor(n))throw HostError{"bad_request","invalid memory policy: "+key};
+            if(key=="reserve_mb")next.reserve_mb=uint64_t(n);
+            else if(key=="working_set_mb" && n>=64)next.working_set_mb=uint64_t(n);
+            else if(key=="decode_cache_gib")next.decode_cache_gib=uint64_t(n);
+            else throw HostError{"bad_request","unknown or out-of-range memory policy: "+key};
+        }
+    }
+    return next;
+}
+Json m_memory_policy(const Request& request) {
+    if (request.params.has("patch")) {
+        const Json& patch=request.params.at("patch");
+        if(!patch.is_object())throw HostError{"bad_request","memory policy patch must be an object"};
+        const auto next=patched_policy(patch,memory_policy);
+        if(!decode_cache::directory.empty()) {
+            std::error_code ec;fs::create_directories(decode_cache::directory,ec);
+            const auto text=policy_json(next).dump();std::string error;
+            if(ec||!write_file_atomic(decode_cache::directory/"settings.json",std::vector<uint8_t>(text.begin(),text.end()),true,error))
+                throw HostError{"io_error","cannot save memory policy: "+error};
+        }
+        memory_policy=next;decode_cache::capacity=next.decode_cache_gib*1024*1024*1024;
+        decode_cache::trim();
+    }
+    if(request.params.at("clear_decode_cache").as_bool(false)) {
+        for(const auto& entry:decode_cache::entries()) { std::error_code ec;fs::remove(entry.path(),ec); }
+    }
+    Json out=policy_json(memory_policy);uint64_t bytes=0;auto files=decode_cache::entries();
+    for(const auto& entry:files) {std::error_code ec;const auto size=entry.file_size(ec);if(!ec)bytes+=size;}
+    const auto [used,available]=process_memory();
+    out.set("process_bytes",number(double(used)));out.set("available_bytes",number(double(available)));
+    out.set("decode_cache_bytes",number(double(bytes)));out.set("decode_cache_entries",number(double(files.size())));
+    out.set("decode_cache_hits",number(double(decode_cache::hits)));out.set("decode_cache_misses",number(double(decode_cache::misses)));
+    out.set("decode_cache_path",str(path_utf8(decode_cache::directory)));
+    return out;
+}
+void memory_preflight(const Probe& probe) {
+    if(memory_override || decode_cache::directory.empty())return;
+    // A soft preflight budget, not an OS limit. Include float input, LibRaw
+    // workspace and the forthcoming GPU planes; the user may continue once.
+    const uint64_t pixels=uint64_t(probe.width)*probe.height;
+    const uint64_t projected=pixels>UINT64_MAX/96?UINT64_MAX:pixels*96;
+    const auto [used,available]=process_memory();
+    constexpr uint64_t mb=1024*1024;
+    if((!memory_policy.allow_over_reserve && available && (projected>available || memory_policy.reserve_mb*mb>available-projected)) ||
+        (!memory_policy.unlimited && (used>memory_policy.working_set_mb*mb || projected>memory_policy.working_set_mb*mb-used))) {
+        throw HostError{"memory_budget","Estimated additional decode/render memory: "+std::to_string(projected/mb)+
+            " MiB; process: "+std::to_string(used/mb)+" MiB; available: "+std::to_string(available/mb)+
+            " MiB. This exceeds your reserve or working-set budget."};
+    }
+}
 
 
 bool pair_path(const fs::path& path) {
@@ -568,8 +653,8 @@ DecodeOptions decode_options(const Json& decode) {
     if (decode.is_null()) return options;
     if (!decode.is_object()) throw HostError{"bad_request", "decode must be an object"};
     options.raw_mode = optional_string(decode, "raw_mode", "compatible16");
-    if (options.raw_mode != "compatible16" && options.raw_mode != "headroom")
-        throw HostError{"bad_request", "decode.raw_mode must be compatible16 or headroom"};
+    if (options.raw_mode != "compatible16" && options.raw_mode != "headroom" && options.raw_mode != "auto")
+        throw HostError{"bad_request", "decode.raw_mode must be compatible16, headroom or auto"};
     for (const auto& kv : decode.fields()) {
         if (kv.first == "raw_mode") continue;
         if (kv.first == "white_balance") {
@@ -599,7 +684,7 @@ struct Decoded {
     double decode_ms = 0;
 };
 
-Decoded decode_frame(const fs::path& path, const DecodeOptions& options) {
+Decoded decode_frame(const fs::path& path, const DecodeOptions& options, bool cache_write = true) {
     std::error_code ec;
     if (!fs::exists(path, ec)) throw HostError{"not_found", "not found: " + path_utf8(path)};
     // Do this before LibRaw allocates, not only later in engine_open. Cached
@@ -608,7 +693,7 @@ Decoded decode_frame(const fs::path& path, const DecodeOptions& options) {
     const auto t0 = Clock::now();
     Decoded d;
     std::string error;
-    if (!decode_linear_prophoto(path, options, d.frame, d.probe, error)) {
+    if (!decode_linear_prophoto(path, options, d.frame, d.probe, error, cache_write)) {
         const std::string prefix = kUnsupportedPrefix;
         if (error.rfind(prefix, 0) == 0) throw HostError{"unsupported", error.substr(prefix.size())};
         throw HostError{"decode_failed", error};
@@ -638,11 +723,18 @@ Json open_reply(const Session& s, const Decoded& d, const Json& opened, double o
     r.set("height", number(d.frame.height));
     r.set("kind", str(kind_name(d.probe.kind)));
     r.set("metadata", metadata_json(d.probe.metadata));
+    if (s.raw_metadata) {
+        Json info = Json::object(); info.set("requested", str(s.decode.raw_mode));
+        info.set("effective", str(s.raw_metadata->headroom_enabled ? "headroom" : "compatible16"));
+        info.set("linear_output", str("ProPhoto RGB"));
+        r.set("raw_decode", std::move(info));
+    }
     r.set("params", opened.at("params"));
     r.set("detected_input", opened.at("detected_input"));
     r.set("output_color_space", str(s.output_space));
     Json timings = Json::object();
     timings.set("decode", number(d.decode_ms));
+    timings.set("decode_cache_hit", Json(d.frame.decode_cache_hit));
     timings.set("open", number(open_ms));
     if (d.frame.raw_timings) {
         const auto& t = *d.frame.raw_timings;
@@ -657,11 +749,11 @@ Json open_reply(const Session& s, const Decoded& d, const Json& opened, double o
     return r;
 }
 
-Json m_open(const Request& q) {
+Json m_open(const Request& q, bool cache_write = true) {
     need_engine();
     const fs::path path = utf8_path(require_string(q.params, "path"));
     const DecodeOptions options = decode_options(q.params.at("decode"));
-    Decoded d = decode_frame(path, options);
+    Decoded d = decode_frame(path, options, cache_write);
     std::string delta;
     const Json& params = q.params.at("params");
     if (params.is_object()) delta = params.dump();
@@ -704,7 +796,7 @@ Json pair_decode_wire(const Json& settings) {
     wire.set("white_balance", std::move(wb)); return wire;
 }
 void apply_snapshot(const std::shared_ptr<Session>& s, const Json& p);
-Json m_pair(const Request& q, bool updating, bool parent_running = false) {
+Json m_pair(const Request& q, bool updating, bool parent_running = false, bool cache_write = true) {
     need_engine();
     auto s = updating ? find_session(q.params, false) : std::make_shared<Session>();
     if (updating && !s->pair_source) throw HostError{"bad_request", "update_pair requires a pair session"};
@@ -736,7 +828,7 @@ Json m_pair(const Request& q, bool updating, bool parent_running = false) {
     auto decode=[&](const fs::path& file,const Json& settings,FloatImage& image,Probe& probe,std::string& why) {
         check_cancelled();spk::view::trim_idle_memory(g.engine);
         const auto options=decode_options(pair_decode_wire(settings));
-        return decode_linear_prophoto(file,options,image,probe,why);
+        return decode_linear_prophoto(file,options,image,probe,why,cache_write);
     };
     auto meter=[&](const FloatImage& image,const std::string& method) {
         Json probe=params;probe.set("auto_exposure",Json(true));probe.set("auto_exposure_method",str(method));
@@ -985,14 +1077,17 @@ Json m_render_view(const Request& q, std::vector<uint8_t>& payload) {
 
 Json m_render_source(const Request& q, std::vector<uint8_t>& payload) {
     auto s = find_session(q.params);
-    const auto req = view_request(q.params, false);
+    auto req = view_request(q.params, false);
+    const auto format = optional_string(q.params, "format", "rgba8");
+    if (format != "rgba8" && format != "rgba16") throw HostError{"bad_request", "source format must be rgba8 or rgba16"};
+    req.rgba16 = format == "rgba16";
     spk::view::Result v;
     std::string error;
-    if (!spk::view::render_source(s->handle, req.long_edge, req.target_space, v, error))
+    if (!spk::view::render_source(s->handle, req.long_edge, req.target_space, v, error, req.rgba16))
         throw HostError{"engine_error", error};
     Json image = Json::object();
     image.set("width", number(v.width)); image.set("height", number(v.height));
-    image.set("row_bytes", number(double(v.width) * 4)); image.set("format", str("rgba8"));
+    image.set("row_bytes", number(double(v.width) * (req.rgba16 ? 8 : 4))); image.set("format", str(req.rgba16 ? "rgba16" : "rgba8"));
     image.set("color_space", str(req.target_space));
     Json r = Json::object(); r.set("image", std::move(image));
     r.set("generation", q.params.at("generation"));
@@ -1294,7 +1389,9 @@ Json m_export_frame(const Request& q, std::vector<uint8_t>* proof_payload = null
         check_cancelled();
         Request open = q;
         open.params.set("path", str(source_path));
-        const auto opened = q.params.has("pair") ? m_pair(open, false, true) : m_open(open);
+        // One-pass private sources may use existing RAW cache entries but must
+        // not write hundreds of MiB per frame or evict the user's editor cache.
+        const auto opened = q.params.has("pair") ? m_pair(open, false, true, false) : m_open(open, false);
         open_timings = opened.at("timings_ms");
         Json identity = Json::object(); identity.set("session", opened.at("session"));
         s = find_session(identity); private_session = true;
@@ -1303,9 +1400,16 @@ Json m_export_frame(const Request& q, std::vector<uint8_t>* proof_payload = null
         std::shared_ptr<Session> s; bool owned;
         ~ClosePrivate() {
             if (!owned) return;
-            std::lock_guard<std::mutex> lock(g.sessions_mutex);
-            if (s->handle) spk_session_release(s->handle);
-            s->handle = nullptr; g.sessions.erase(s->id);
+            {
+                std::lock_guard<std::mutex> lock(g.sessions_mutex);
+                if (s->handle) spk_session_release(s->handle);
+                s->handle = nullptr; g.sessions.erase(s->id);
+            }
+            // The next private frame already trims before decoding. Release
+            // this frame now, including after errors/cancellation, instead of
+            // retaining its full-size scratch until another job or idle timer.
+            try { spk::view::trim_idle_memory(g.engine); }
+            catch (...) { /* A completed export must survive cache cleanup failure. */ }
         }
     } close{s, private_session};
     running.bind(s->id);
@@ -1562,6 +1666,7 @@ Json m_export_di(const Request& q) {
 }
 
 void dispatch(const Request& q) {
+    memory_override = q.params.at("memory_override").as_bool(false);
     std::vector<uint8_t> payload;
     Json result;
     const std::string& m = q.method;
@@ -1569,6 +1674,7 @@ void dispatch(const Request& q) {
     else if (m == "params_schema") result = m_params_schema(q);
     else if (m == "print_lut_catalog") result = m_print_lut_catalog(q);
     else if (m == "memory_report") result = m_memory_report(q);
+    else if (m == "memory_policy") result = m_memory_policy(q);
     else if (m == "probe") result = m_probe(q);
     else if (m == "thumbnail") result = m_thumbnail(q, payload);
     else if (m == "open") result = pair_path(utf8_path(q.params.at("path").as_string())) ? m_pair(q, false) : m_open(q);
@@ -1657,7 +1763,7 @@ void worker() {
             respond_error(q.id, "internal", e.what());
         }
         // Diagnostics polling must not keep a frame-sized pool alive forever.
-        const bool metadata_only = q.method == "memory_report" || q.method == "hello" ||
+        const bool metadata_only = q.method == "memory_policy" || q.method == "memory_report" || q.method == "hello" ||
             q.method == "capabilities" || q.method == "params_schema" || q.method == "print_lut_catalog" ||
             q.method == "get_params" || q.method == "progress" || q.method == "overscan_geometry";
         if (!metadata_only) {
@@ -1755,11 +1861,12 @@ void usage() {
 int main(int argc, char** argv) {
     set_binary_stdio();
     const std::vector<std::string> args = utf8_args(argc, argv);
-    std::string resources;
+    std::string resources, decode_directory;
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
         const bool has_value = i + 1 < args.size();
         if (a == "--resources" && has_value) resources = args[++i];
+        else if (a == "--decode-cache" && has_value) decode_directory = args[++i];
         else if (a == "--device" && has_value) set_env("SPEKTRAFILM_VULKAN_DEVICE", args[++i]);
         else if (a == "--log-level" && has_value) {
             const std::string& v = args[++i];
@@ -1778,6 +1885,17 @@ int main(int argc, char** argv) {
     // Default: beside the executable, as build/host-<os>-x64/ stages it.
     if (resources.empty()) resources = path_utf8(executable_dir(argv[0]) / "engine");
     g.resources = utf8_path(resources);
+    if(!decode_directory.empty()) {
+        decode_cache::directory=fs::absolute(utf8_path(decode_directory));
+        decode_cache::build_key=std::to_string(decode_cache::file_crc(utf8_path(args[0])).value_or(0));
+        std::vector<uint8_t> bytes;std::string error;Json saved;
+        if(read_file(decode_cache::directory/"settings.json",bytes,error)&&bytes.size()<65536&&
+            Json::parse(std::string(bytes.begin(),bytes.end()),saved,error)&&saved.is_object()) {
+            try{memory_policy=patched_policy(saved,memory_policy);}catch(...){log_line(0,"invalid saved memory policy; using defaults");}
+        }
+        decode_cache::capacity=memory_policy.decode_cache_gib*1024*1024*1024;
+        decode_cache::preflight=memory_preflight;
+    }
     lens_database(g.resources / "lensfun" / "version_2");
     const auto t0 = Clock::now();
     g.engine = spk_engine_create(resources.c_str(), nullptr);

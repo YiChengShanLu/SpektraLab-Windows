@@ -2,10 +2,11 @@
 
 [English](README.md) · **简体中文**
 
-**Windows 开发版：**本分支增加了 C++/Vulkan 后端、原生 LibRaw 解码、RGB16 TIFF 导出和 Windows 桌面界面。
-构建方法见 [Windows 说明](engine/WINDOWS.md)，已验证功能及限制见 [功能覆盖表](engine/WINDOWS_FEATURE_COVERAGE.md)。
-[Qt Quick 前端](windows_UI/README.md) 已开始复刻胶片与相纸编辑布局，同时保留[最小 Win32 窗口](engine/WINDOWS_DESKTOP.md)。
-下文介绍的 macOS 产品还包含尚未完成 Windows 迁移的界面与显示功能。
+**Windows 1.3.2：**[下载安装版或便携 ZIP](https://github.com/YiChengShanLu/SpektraLab-Windows/releases/tag/v1.3.2-windows)。
+
+**Windows 分支：**当前编辑器位于 `desktop/`，使用 Tauri/React 界面、LibRaw/Vulkan 原生处理及已集成的照片图库 SDK。
+安装使用、构建和已知限制见 [Windows 说明](docs/WINDOWS.md)，另见 [Windows 更新记录](CHANGELOG-Windows.md) 和 [来源与许可证](THIRD_PARTY.md)。
+旧 Qt/Win32 窗口保留作历史实现。下文保留原作者的 Mac 产品说明；Windows 尚未证明逐像素一致，也不具备 Mac 的 EDR 显示能力。
 
 macOS 上的胶片与放大相纸模拟器。打开一张 RAW，选好胶片和相纸，约一秒内得到一张按物理过程建模的照片——颗粒、光晕、成色剂耦合、放大机滤色，一样不少。
 

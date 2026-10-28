@@ -1,6 +1,7 @@
 #include "image_io.hpp"
 #include "input_formats.hpp"
 #include "platform.hpp"
+#include "decode_cache.hpp"
 #include <OpenEXR/ImfOutputFile.h>
 #include <OpenEXR/ImfHeader.h>
 #include <OpenEXR/ImfChannelList.h>
@@ -58,6 +59,8 @@ void complex_profile() {
 }
 int main(int argc,char** argv) {
     try {
+        constexpr int orientations[]={1,2,4,3,5,8,6,7};
+        for(int flip=0;flip<8;++flip)require(raw_exif_orientation(flip)==orientations[flip],"LibRaw mirror/orientation mapping");
         require(argc>=2,"usage: spk_host_inputs output-dir [heic-fixture]");
         const auto dir=std::filesystem::u8path(argv[1]);std::filesystem::create_directories(dir);
         // Recognizing a RAW extension routes it to LibRaw; it is not a claim
@@ -98,6 +101,22 @@ int main(int argc,char** argv) {
             for(float v:image.rgb)require(std::isfinite(v),"HEIC non-finite pixel");
             std::cout<<"HEIC alpha fixture decoded through bundled libde265; ";
         }
-        std::cout<<"EXR float32/data-window/negative/highlight/Chinese path, RGB CLUT ICC, thumbnails and invalid input passed\n";return 0;
+        // The decode cache must retain float bits, including signed zero and
+        // out-of-range scene values; an 8-bit source-preview comparison cannot.
+        decode_cache::directory=dir/"owned-decode-cache";decode_cache::capacity=1024*1024;
+        FloatImage linear;linear.width=3;linear.height=2;linear.raw_metadata.emplace();
+        for(int i=0;i<18;++i)linear.rgb.push_back(float(i)/7-.75f);
+        linear.rgb[0]=-0.f;linear.rgb[1]=std::bit_cast<float>(uint32_t(0x7fc01234));
+        linear.raw_metadata->camera_to_output[3]=.123456789f;
+        linear.raw_metadata->black_pattern={4,8,12,16};
+        Probe raw_probe;raw_probe.kind=FileKind::Raw;raw_probe.width=3;raw_probe.height=2;
+        raw_probe.metadata.extra_exif[0x9206]={5,1,{5,0,0,0,1,0,0,0}};
+        decode_cache::save("owned-roundtrip",linear,raw_probe);
+        FloatImage restored;Probe restored_probe=raw_probe;
+        require(decode_cache::load("owned-roundtrip",restored,restored_probe),"lossless decode cache miss");
+        require(restored.rgb.size()==linear.rgb.size()&&std::memcmp(restored.rgb.data(),linear.rgb.data(),linear.rgb.size()*sizeof(float))==0,"RAW cache changed float bits");
+        require(restored.raw_metadata->camera_to_output==linear.raw_metadata->camera_to_output&&restored.raw_metadata->black_pattern==linear.raw_metadata->black_pattern&&
+            restored_probe.metadata.extra_exif.at(0x9206).bytes==raw_probe.metadata.extra_exif.at(0x9206).bytes,"RAW cache dropped calibration/EXIF");
+        std::cout<<"EXR float32/data-window/negative/highlight/Chinese path, RGB CLUT ICC, lossless RAW cache, thumbnails and invalid input passed\n";return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

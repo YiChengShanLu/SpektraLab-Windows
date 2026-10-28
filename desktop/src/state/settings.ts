@@ -26,6 +26,9 @@ export interface Settings {
   interfaceScale: InterfaceScale;
   previewLongEdge: number;
   previewGamut: PreviewGamut;
+  fastStockPreview: boolean;
+  exportView: 'viewer' | 'grid';
+  exportGridColumns: number;
   sideUnit: SideUnit;
   decoupleEffects: boolean;
   recalculateEffectsAfterCrop: boolean;
@@ -47,6 +50,9 @@ export const SETTINGS_DEFAULT: Settings = {
   interfaceScale: 115,
   previewLongEdge: 2560,
   previewGamut: 'auto',
+  fastStockPreview: true,
+  exportView: 'viewer',
+  exportGridColumns: 3,
   sideUnit: 'mm',
   decoupleEffects: false,
   ...RENDER_PREFERENCES_DEFAULT,
@@ -79,6 +85,8 @@ export function loadSettings(storage: Pick<Storage, 'getItem'> | null): Settings
     if (!INTERFACE_SCALES.includes(s.interfaceScale)) s.interfaceScale = SETTINGS_DEFAULT.interfaceScale;
     if (!(PREVIEW_EDGES as readonly number[]).includes(s.previewLongEdge)) s.previewLongEdge = SETTINGS_DEFAULT.previewLongEdge;
     if (!(['auto', 'srgb', 'display-p3'] as const).includes(s.previewGamut)) s.previewGamut = SETTINGS_DEFAULT.previewGamut;
+    if (!['viewer', 'grid'].includes(s.exportView)) s.exportView = 'viewer';
+    s.exportGridColumns = Number.isInteger(s.exportGridColumns) ? Math.max(2, Math.min(8, s.exportGridColumns)) : 3;
     s.leftWidth = boundedPanelWidth('leftWidth', s.leftWidth);
     s.rightWidth = boundedPanelWidth('rightWidth', s.rightWidth);
     if (!Number.isInteger(s.filmEdgeBodySeed) || s.filmEdgeBodySeed < 0 || s.filmEdgeBodySeed > 2147483647) s.filmEdgeBodySeed = 0;

@@ -54,7 +54,7 @@ const TARGETS = {
           triple: 'x86_64-pc-windows-msvc',
           bundles: 'nsis',
           out: 'windows',
-          extra: ['--target', 'x86_64-pc-windows-msvc'],
+          extra: [],
         }
       : process.env.SPEKTRALAB_WIN_TOOLCHAIN === 'msvc'
       ? {
@@ -82,24 +82,47 @@ function die(msg) {
 
 function stage(t) {
   const exe = join(t.hostDir, t.exe);
+  const libraryExe = process.env.SPEKTRALAB_LIBRARY_HOST ?? join(buildDir, 'spklib-windows', t.exe.endsWith('.exe') ? 'spklib-host.exe' : 'spklib-host');
+  const bundleLibrary = t.exe.endsWith('.exe') || existsSync(libraryExe);
+  if (bundleLibrary && !existsSync(libraryExe)) die(`no library helper at ${libraryExe}. Build it with npm run build:library before packaging.`);
   if (!existsSync(exe)) die(`no engine host at ${exe}. Build it first (engine/host, see engine/WINDOWS.md / the backend's notes); refusing to package an app without its engine.`);
   if (!existsSync(join(t.hostDir, 'engine'))) die(`no engine resources at ${join(t.hostDir, 'engine')}`);
   const bin = join(tauriDir, 'binaries');
   const staging = join(tauriDir, 'host-staging');
+  for (const path of [bin, staging]) {
+    if (dirname(path) !== tauriDir) die(`unsafe staging path: ${path}`);
+  }
   rmSync(bin, { recursive: true, force: true });
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(bin, { recursive: true });
   const ext = t.exe.endsWith('.exe') ? '.exe' : '';
   cpSync(exe, join(bin, `spektralab-host-${t.triple}${ext}`));
+  if (bundleLibrary) cpSync(libraryExe, join(bin, `spklib-host-${t.triple}${ext}`));
   cpSync(join(t.hostDir, 'engine'), join(staging, 'engine'), { recursive: true });
   if (existsSync(join(t.hostDir, 'licenses'))) cpSync(join(t.hostDir, 'licenses'), join(staging, 'licenses'), { recursive: true });
+  mkdirSync(join(staging, 'licenses'), { recursive: true });
+  cpSync(join(desktop, 'library-sdk', 'LICENSE'), join(staging, 'licenses', 'spklib-LICENSE.txt'));
   // The user command needs no separately installed Node/npm. The same native
   // app provides the locked sidecar service used by the GUI and by the CLI.
   execFileSync(process.execPath, [join(here, 'build-agent.mjs'), staging, '--runtime'], { stdio: 'inherit', windowsHide: true });
+  const resources = { 'host-staging/engine': 'host/engine', 'host-staging/licenses': 'host/licenses', 'host-staging/agents': 'agents' };
+  const cli = t.exe.endsWith('.exe') ? 'spektralab-cli.cmd' : 'spektralab-cli';
+  resources[`host-staging/${cli}`] = cli;
+  for (const name of ['README.md', 'CHANGELOG.md', 'LICENSE.txt', 'BUILD-INFO.json', 'FILE-SHA256.json']) {
+    if (existsSync(join(t.hostDir, name))) {
+      cpSync(join(t.hostDir, name), join(staging, name));
+      resources[`host-staging/${name}`] = name;
+    }
+  }
+  // The Windows host and library helper also need app-local CRT/OpenMP DLLs.
+  for (const name of readdirSync(t.hostDir).filter(n => /\.dll$/i.test(n))) {
+    cpSync(join(t.hostDir, name), join(staging, name));
+    resources[`host-staging/${name}`] = name;
+  }
   const conf = {
     bundle: {
-      externalBin: ['binaries/spektralab-host'],
-      resources: { 'host-staging/engine': 'host/engine', 'host-staging/licenses': 'host/licenses', 'host-staging/agents': 'agents' },
+      externalBin: ['binaries/spektralab-host', ...(bundleLibrary ? ['binaries/spklib-host'] : [])],
+      resources,
     },
   };
   const confPath = join(tauriDir, 'tauri.bundle.json');
@@ -109,10 +132,13 @@ function stage(t) {
 
 function collect(t) {
   const release = join(desktop, 'release', t.out);
+  if (dirname(release) !== join(desktop, 'release')) die(`unsafe release path: ${release}`);
   rmSync(release, { recursive: true, force: true });
   mkdirSync(release, { recursive: true });
   // A cross build lands under target/<triple>/; a native one under target/release/.
-  const roots = which === 'linux' ? [join(tauriDir, 'target', 'release', 'bundle')] : [join(tauriDir, 'target', t.triple, 'release', 'bundle')];
+  const roots = which === 'linux' || process.platform === 'win32'
+    ? [join(tauriDir, 'target', 'release', 'bundle')]
+    : [join(tauriDir, 'target', t.triple, 'release', 'bundle')];
   const found = [];
   for (const root of roots) {
     if (!existsSync(root)) continue;

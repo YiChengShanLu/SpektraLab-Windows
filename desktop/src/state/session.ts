@@ -34,7 +34,7 @@ import { type Geometry, GEOMETRY_DEFAULT, outputSize } from '@shared/geometry';
 import { canvasGeometryFor, edgeEffective, gateFramed, geometryInNegative, resolveFilmEdgeParams, sourceGeometryFor } from '@shared/filmEdge';
 import { type HalfFramePair, type PairHole, type PairLayer, type PairPlacement, type PairSide, PAIR_SIDES,
   decodePair, encodePair, isPairPath, newHole, newPair, pairFilmFormat, pairRects, pairFitRegion, pairSnapshotFor, pairWithMeterReadings, printTrim, resolvePairParams } from '@shared/pair';
-import { type DecodeSettings, type Sidecar, decodeSidecar, encodeSidecar, newSidecar } from '@shared/sidecar';
+import { type DecodeSettings, type Sidecar, decodeSidecar, encodeSidecar, isUntouched, newSidecar } from '@shared/sidecar';
 import { decodeWire, isRawPath, modeOf } from '@shared/whiteBalance';
 import { type ClipboardGroup, type SettingsClip, CLIPBOARD_GROUPS, applyClip, clipChanges } from '@shared/clipboard';
 import { EMPTY_CATALOG, type StockCatalog, loadCatalog } from '@shared/stocks';
@@ -46,9 +46,10 @@ import { settingsStore } from './settings';
 import { frameImages, makeThumbFromPrint, THUMB_EDGE } from './frames';
 import { thumbs } from './thumbs';
 import { frameOrder } from './frameOrder';
-import { displayCacheKey, forgetDisplayMemoryCache, peekDisplayCache, readDisplayCache, writeDisplayCache, type DisplayCacheDescriptor } from './displayCache';
+import { cameraDescriptor, displayCacheKey, forgetDisplayMemoryCache, peekDisplayCache, readDisplayCache, writeDisplayCache, type DisplayCacheDescriptor } from './displayCache';
 import { PreviewQueue } from './previewQueue';
 import { tz } from '../i18n';
+import { bindLibraryEdits, libraryBinding, loadPhotoEdits, savePhotoEdits, type LibraryBinding } from '../library/edits';
 import { clampZoom, steppedZoom } from '../canvas/zoom';
 
 export type Tool = 'select' | 'hand' | 'crop' | 'neutral';
@@ -210,9 +211,6 @@ let openingTask: Promise<void> = Promise.resolve();
 let liveDisplayKey: { session: string; key: string } | null = null;
 let previewIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
-const cameraDescriptor = (path: string): DisplayCacheDescriptor => ({ kind: 'original', sources: [path],
-  configuration: { version: 1, embeddedCameraPreview: true, longEdge: 2048, display: 'srgb', format: 'rgba8' } });
-
 /** Import previews never open an engine session or fall back to RAW decode. */
 export const importPreviews = new PreviewQueue(async ({ path }, signal) => {
   if (!get().hello?.thumbnail_options?.includes('embedded-only')) return 'skipped';
@@ -226,7 +224,7 @@ export const importPreviews = new PreviewQueue(async ({ path }, signal) => {
   // an existing full picture before letting its camera JPEG consume RAM too.
   let fullReady = false;
   if (near && !signal.aborted) {
-    const raw = path === get().selection ? null : await platform().sidecarLoad(path).catch(() => null);
+    const raw = path === get().selection ? null : await loadPhotoEdits(path).catch(() => null);
     const sidecar = path === get().selection ? get().sidecar : raw ? filmStageSidecar(decodeSidecar(raw)) : null;
     if (sidecar?.params.filmEdge.seeded && !signal.aborted) {
       const snapshot = { ...get(), selection: path, pair: null, sidecar, tool: 'select' as const, view: { ...get().view, fit: true } };
@@ -272,6 +270,9 @@ function queueImportPreviews() {
     ? s.frames.filter((f) => isRawPath(f.path)).map((f) => ({ path: f.path, key: JSON.stringify([f.path, f.size, f.mtime_ms]) })) : [], s.selection ?? undefined);
 }
 let wantedGen = 0;
+// As on Mac, a fresh frame opens onto its decode. Explicit edits/Solve ask
+// for a develop; display size, colour-space and cache work do not.
+let wantsDevelop = true;
 let inFlight = false;
 let fullTimer: ReturnType<typeof setTimeout> | null = null;
 let latitudeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -370,7 +371,7 @@ function cachedDisplayDescriptor(kind: 'print' | 'original', s: SessionState, ti
   const longEdge = Math.min(Math.max(previewEdge(), s.canvasPx.width, s.canvasPx.height), s.maxTextureSize ?? 16384);
   return { kind, sources: [s.selection, ...(s.pair ? PAIR_SIDES.flatMap((side) => s.pair![side] ? [s.pair![side]!.path] : []) : [])],
     configuration: { version: 2, decode: canonicalDecode(s.sidecar.decode), pair, display: s.displaySpace,
-      format: s.hello?.view_formats?.includes('rgba16') && kind === 'print' ? 'rgba16' : 'rgba8', longEdge,
+      format: (kind === 'print' ? s.hello?.view_formats : s.hello?.source_formats)?.includes('rgba16') ? 'rgba16' : 'rgba8', longEdge,
       ...(kind === 'print' || pair ? { params: wireParams(s.sidecar.params) } : {}),
       ...(kind === 'print' ? { tier, adjustments: s.sidecar.adjustments,
         geometry: canvasGeometryFor(s.sidecar.params, s.sidecar.geometry, s.gate),
@@ -387,6 +388,7 @@ function cacheDisplay(key: string | null, image: Parameters<typeof writeDisplayC
 async function warmDisplayFromCache(path: string, generation: number) {
   const s = get();
   await Promise.all((['print', 'original'] as const).map(async (kind) => {
+    if (kind === 'print' && !wantsDevelop) return;
     const descriptor = cachedDisplayDescriptor(kind, s); if (!descriptor) return;
     const stamp = JSON.stringify(descriptor);
     let image = await readDisplayCache(await displayCacheKey(descriptor), { retain: kind === 'print' });
@@ -432,14 +434,14 @@ export function noteTextureLimit(maxTextureSize: number) {
   const before = viewLongEdge(get());
   if (get().maxTextureSize === maxTextureSize) return;
   set({ maxTextureSize });
-  if (hostViews() && before !== viewLongEdge(get()) && !get().batchExporting) void requestPrint();
+  if (hostViews() && before !== viewLongEdge(get()) && !get().batchExporting) void requestPrint(true);
   void refreshOriginal();
 }
 
 export function noteDisplaySpace(displaySpace: 'srgb' | 'display-p3') {
   if (get().displaySpace === displaySpace) return;
   set({ displaySpace });
-  if (hostViews() && !get().batchExporting) void requestPrint();
+  if (hostViews() && !get().batchExporting) void requestPrint(true);
   void refreshOriginal();
 }
 
@@ -484,7 +486,9 @@ function noteAsShot() {
   scheduleSave();
 }
 
-export async function requestPrint(): Promise<void> {
+export async function requestPrint(automatic = false): Promise<void> {
+  if (!automatic || get().sidecar.state !== 'unprocessed') wantsDevelop = true;
+  if (!wantsDevelop) return;
   wantedGen++;
   if (fullTimer) clearTimeout(fullTimer);
   if (get().tool === 'crop' && geometryInNegative(get().sidecar.params, get().gate)) return;
@@ -516,6 +520,21 @@ export async function requestPrint(): Promise<void> {
         void refreshOriginal();
       }
       const d = sentParams ? paramsDelta(want, sentParams, s.gate, s.catalog) : { delta: wireParams(want), layers: new Set(['shoot']) };
+      // The LUT is a temporary view of the existing negative, never an edit
+      // or a saved print. The normal reprint below still owns the final image.
+      if (sentParams && sentParams.printStock !== want.printStock && settingsStore.getState().fastStockPreview &&
+          s.hello?.methods?.includes('preview_stock_lut') && !s.pair && !geometryInNegative(want, s.gate) &&
+          Object.keys(d.delta).every((key) => ['print_stock', 'scan_film', 'digital_intermediate'].includes(key))) {
+        try {
+          const quick = await host().previewStock(sid, want.printStock, s.displaySpace, !!s.hello.view_formats?.includes('rgba16'));
+          if (gen === wantedGen && get().engineSession === sid) {
+            frameImages.print = quick;
+            set({ imageVersion: get().imageVersion + 1, badge: 'preview', status: tz('Fast stock preview…', '快速相纸预览…') });
+          }
+        } catch (error) { platform().log('info', `Stock preview unavailable; using full reprint: ${String(error)}`); }
+        if (gen !== wantedGen) continue;
+        if (get().engineSession !== sid) return;
+      }
       if (Object.keys(d.delta).length) {
         await host().setParams(sid, d.delta);
         sentParams = want;
@@ -525,7 +544,8 @@ export async function requestPrint(): Promise<void> {
       if (get().engineSession !== sid) return;
       if (gen === wantedGen) {
         frameImages.print = r;
-        set({ imageVersion: get().imageVersion + 1, badge: 'preview', status: '' });
+        set({ imageVersion: get().imageVersion + 1, badge: 'preview', status: '', sidecar: { ...get().sidecar, state: 'processed' } });
+        scheduleSave();
         noteFirstViewCommitted(sid, r.width, r.height, r.ms);
       }
       if (gen === wantedGen) break;
@@ -538,7 +558,7 @@ export async function requestPrint(): Promise<void> {
     // An obsolete failure must neither overwrite the new frame's status nor
     // lose an edit which arrived while that failed request was in flight.
     if ((attemptedGen !== wantedGen || get().engineSession !== sid) && get().engineSession && !get().batchExporting)
-      void requestPrint();
+      void requestPrint(true);
   }
   if (await resolvePendingPlacement()) return;
   scheduleFull();
@@ -581,7 +601,7 @@ async function renderFull(gen: number) {
   } finally {
     inFlight = false;
     resumePreviewsWhenIdle();
-    if (gen !== wantedGen) void requestPrint();
+    if (gen !== wantedGen) void requestPrint(true);
   }
 }
 
@@ -629,12 +649,17 @@ export async function flushSave(): Promise<void> {
   const path = s.selection;
   const revision = saveRevision;
   saveTask = (async () => { try {
-    await platform().sidecarSave(path, encodeSidecar(s.sidecar));
-    if (get().selection === path) savedDocument = { path, content: sidecarContent(encodeSidecar(s.sidecar)) };
+    const document = encodeSidecar(s.sidecar);
+    if (s.pair && libraryBinding(path)) document._spkLibraryPair = encodePair(s.pair);
+    const saved = await savePhotoEdits(path, document);
+    if (get().selection === path && libraryBinding(path) && saved.raw._spkLibraryRevision)
+      set({ sidecar: { ...get().sidecar, raw: { ...get().sidecar.raw, _spkLibraryRevision: saved.raw._spkLibraryRevision,
+        ...(s.pair ? { _spkLibraryPair: saved.raw._spkLibraryPair } : {}) } } });
+    if (get().selection === path) savedDocument = { path, content: sidecarContent(document) };
     if (s.pair) {
       const pair = encodePair(s.pair), value = JSON.stringify(pair);
       if (savedPair?.path !== path || savedPair.value !== value) {
-        await platform().pairSave(path, pair);
+        if (!libraryBinding(path)) await platform().pairSave(path, pair);
         savedPair = { path, value };
       }
     }
@@ -658,7 +683,7 @@ function markExternalConflict() {
 const journalPath = (path: string) => /^[a-z]:[\\/]/i.test(path) ? path.replaceAll('\\', '/').toLowerCase() : path.replaceAll('\\', '/');
 function sidecarContent(raw: unknown): string {
   const value = encodeSidecar(decodeSidecar(raw));
-  delete value._spkRevision; delete value.source;
+  delete value._spkRevision; delete value._spkLibraryRevision; delete value.source;
   const sorted = (v: unknown): unknown => Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object'
     ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, item]) => [k, sorted(item)])) : v;
   return JSON.stringify(sorted(value));
@@ -684,15 +709,15 @@ export async function pollAgentChanges(): Promise<void> {
         // A burst can exceed the journal's bounded path list. Compare the
         // saved snapshots, including both pair sources, before reloading.
         const baseline = savedDocument?.path === s.selection ? savedDocument.content : sidecarContent(encodeSidecar(s.sidecar));
-        const raw = await platform().sidecarLoad(s.selection);
+        const raw = await loadPhotoEdits(s.selection);
         if (sidecarContent(raw) !== baseline) pendingExternalPaths.add(journalPath(s.selection));
         if (s.pair) {
-          const diskPair = decodePair(await platform().pairLoad(s.selection));
+          const diskPair = decodePair(libraryBinding(s.selection) ? (raw as Record<string, unknown> | null)?._spkLibraryPair ?? await platform().pairLoad(s.selection) : await platform().pairLoad(s.selection));
           if (!diskPair || JSON.stringify(encodePair(diskPair)) !== savedPair?.value) pendingExternalPaths.add(journalPath(s.selection));
           for (const side of PAIR_SIDES) {
             const hole = s.pair[side]; if (!hole) continue;
             const source = pairSourceSidecars.get(hole.path);
-            const disk = await platform().sidecarLoad(hole.path);
+            const disk = await loadPhotoEdits(hole.path);
             if (!source || sidecarContent(disk) !== sidecarContent(encodeSidecar(source))) pendingExternalPaths.add(journalPath(hole.path));
           }
         }
@@ -702,7 +727,7 @@ export async function pollAgentChanges(): Promise<void> {
         // Any source change can affect an unopened pair's thumbnail.
         if (!journal.all && !pendingExternalPaths.has(journalPath(frame.path)) && !isPairPath(frame.path)) continue;
         thumbs.invalidate(frame.path); delete geometry[frame.path];
-        if (frame.path !== s.selection) void platform().sidecarLoad(frame.path).then((raw) => {
+        if (frame.path !== s.selection) void loadPhotoEdits(frame.path).then((raw) => {
           if (get().selection !== frame.path && get().frames.some((f) => f.path === frame.path) && raw)
             set({ savedGeometry: { ...get().savedGeometry, [frame.path]: decodeSidecar(raw).geometry } });
         }).catch(() => {});
@@ -732,7 +757,9 @@ export async function reloadExternalEdits(): Promise<void> {
   await select(s.selection, { externalReload: true });
 }
 
+let gestureActive = false;
 function pushUndo() {
+  if (gestureActive) return;
   const now = performance.now();
   if (now - lastUndoAt < 500) return;
   lastUndoAt = now;
@@ -819,7 +846,7 @@ export function setParams(fn: (p: FilmParams) => FilmParams) {
   const next = filmStageParams(fn(s.sidecar.params));
   if (jsonEqual(next, s.sidecar.params)) return;
   pushUndo();
-  set({ sidecar: edgeTransition(get().sidecar, next) });
+  set({ sidecar: { ...edgeTransition(get().sidecar, next), state: 'stale' } });
   resolveCurrentFilmEdge();
   if (sourceGeometryFor(get().sidecar.params, get().sidecar.geometry, s.gate)) set({ showingOriginal: false, comparing: false });
   scheduleSave();
@@ -853,16 +880,16 @@ export function selectPrintStock(printStock: string) {
 }
 
 /** A Layer 2 edit: reuse the GPU print cache and update the display output. */
-export function setAdjustments(fn: (a: Adjustments) => Adjustments) {
+export function setAdjustments(fn: (a: Adjustments) => Adjustments, opts: { coalesce?: boolean } = {}) {
   const s = get();
   if (s.pair && s.pairLayer !== 'film' && s.pair[s.pairLayer]) {
     const side = s.pairLayer, next = fn(shownAdjustments(s));
-    updatePair((p) => ({ ...p, [side]: { ...p[side]!, adjustments: next } })); return;
+    updatePair((p) => ({ ...p, [side]: { ...p[side]!, adjustments: next } }), opts); return;
   }
   const next = fn(s.sidecar.adjustments);
   if (jsonEqual(next, s.sidecar.adjustments)) return;
-  pushUndo();
-  set({ sidecar: { ...s.sidecar, adjustments: next } });
+  if (!opts.coalesce) pushUndo();
+  set({ sidecar: { ...s.sidecar, adjustments: next, state: 'stale' } });
   scheduleSave();
   if (hostViews() && !s.batchExporting) void requestPrint();
 }
@@ -875,7 +902,7 @@ export function setGeometry(fn: (g: Geometry) => Geometry, opts: { coalesce?: bo
   if (s.nativeSize && edgeEffective(s.sidecar.params.filmEdge, s.gate)) next = gateFramed(next, s.sidecar.params.filmEdge, s.nativeSize, (next.lockedRatio ?? 1) >= 1);
   if (jsonEqual(next, s.sidecar.geometry)) return;
   if (!opts.coalesce) pushUndo();
-  set({ sidecar: { ...s.sidecar, geometry: next }, savedGeometry: s.selection ? { ...s.savedGeometry, [s.selection]: next } : s.savedGeometry });
+  set({ sidecar: { ...s.sidecar, geometry: next, state: 'stale' }, savedGeometry: s.selection ? { ...s.savedGeometry, [s.selection]: next } : s.savedGeometry });
   scheduleSave();
   resolveCurrentFilmEdge();
   if (settingsStore.getState().recalculateEffectsAfterCrop) recomputeFilmFormat();
@@ -894,7 +921,7 @@ export function setDecode(fn: (d: DecodeSettings) => DecodeSettings) {
   const next = fn(s.sidecar.decode);
   if (jsonEqual(next, s.sidecar.decode)) return;
   pushUndo();
-  set({ sidecar: { ...get().sidecar, decode: next, state: get().sidecar.state === 'processed' ? 'stale' : get().sidecar.state } });
+  set({ sidecar: { ...get().sidecar, decode: next, state: 'stale' } });
   scheduleSave();
   scheduleRedecode();
 }
@@ -955,13 +982,16 @@ function isRawFrame(): boolean {
   return !!s.selection && isRawPath(s.selection);
 }
 
-export function beginGesture() {
+export function beginGesture(continuous = false) {
   // A new drag/key action is an undo boundary even when it follows a prior
   // gesture quickly; updates within this gesture still coalesce normally.
+  gestureActive = false;
   lastUndoAt = -Infinity;
   pushUndo();
   lastUndoAt = performance.now();
+  gestureActive = continuous;
 }
+export function endGesture() { gestureActive = false; lastUndoAt = -Infinity; }
 
 function restore(e: UndoEntry) {
   const s = get();
@@ -978,6 +1008,7 @@ function restore(e: UndoEntry) {
 }
 
 export function undo() {
+  endGesture();
   const s = get();
   if (s.batchExporting || !s.selection) return;
   const prev = s.undo[s.undo.length - 1];
@@ -990,6 +1021,7 @@ export function undo() {
 }
 
 export function redo() {
+  endGesture();
   const s = get();
   if (s.batchExporting || !s.selection) return;
   const next = s.redo[s.redo.length - 1];
@@ -1175,17 +1207,17 @@ export function canMakePair(): boolean {
 export async function makePair(enter = false) {
   if (!canMakePair()) return;
   await flushSave();
-  if (get().externalEditConflict) return;
+  if (get().externalEditConflict || hasUnsavedEdits()) return;
   const s = get(), picked = enter && s.selection ? [s.selection] : s.frames.filter((f) => s.picked.includes(f.path) && !isPairPath(f.path)).slice(0, 2).map((f) => f.path);
   const anchor = picked[0] ?? s.frames.find((f) => !isPairPath(f.path))?.path;
   if (!anchor) return;
   try {
     const hole = async (path: string) => {
-      const raw = path === s.selection ? encodeSidecar(s.sidecar) : await platform().sidecarLoad(path);
+      const raw = path === s.selection ? encodeSidecar(s.sidecar) : await loadPhotoEdits(path);
       const own = raw ? decodeSidecar(raw) : newSidecar();
       return { ...newHole(path), decode: own.decode, geometry: own.geometry };
     };
-    const ownRaw = anchor === s.selection ? encodeSidecar(s.sidecar) : await platform().sidecarLoad(anchor);
+    const ownRaw = anchor === s.selection ? encodeSidecar(s.sidecar) : await loadPhotoEdits(anchor);
     const own = ownRaw ? decodeSidecar(ownRaw) : newSidecar();
     const size = anchor === s.selection ? s.nativeSize : await host().probe(anchor).then((r) => ({ width: r.width, height: r.height })).catch(() => null);
     const pair = { ...newPair(dirName(anchor)), left: picked[0] ? await hole(picked[0]) : null, right: picked[1] ? await hole(picked[1]) : null,
@@ -1198,7 +1230,7 @@ export async function makePair(enter = false) {
     } };
     sidecar.params = resolvePairParams(sidecar.params, pair, null, null, s.catalog);
     const entry = await platform().pairCreate(pair.folder, encodePair(pair));
-    await platform().sidecarSave(entry.path, encodeSidecar(sidecar));
+    await savePhotoEdits(entry.path, encodeSidecar(sidecar));
     if (get().selection !== s.selection || get().folder !== s.folder) return;
     const frames = [...get().frames], at = frames.findIndex((f) => f.path === anchor);
     frames.splice(at < 0 ? frames.length : at + 1, 0, entry);
@@ -1214,12 +1246,12 @@ function adoptPairMeterReadings(requested: HalfFramePair, info: PairInfo | undef
   if (pair !== s.pair) { set({ pair }); scheduleSave(); }
 }
 
-export function updatePair(fn: (pair: HalfFramePair) => HalfFramePair, opts: { step?: boolean; defer?: boolean; params?: FilmParams } = {}) {
+export function updatePair(fn: (pair: HalfFramePair) => HalfFramePair, opts: { step?: boolean; defer?: boolean; params?: FilmParams; coalesce?: boolean } = {}) {
   const s = get(); if (!s.pair || s.batchExporting) return;
   const next = decodePair(encodePair(fn(s.pair)));
   if (!next || (jsonEqual(next, s.pair) && (!opts.params || jsonEqual(opts.params, s.sidecar.params)))) return;
   if (opts.step) lastUndoAt = 0;
-  pushUndo();
+  if (!opts.coalesce) pushUndo();
   set({ pair: next, sidecar: { ...s.sidecar, params: opts.params ?? s.sidecar.params, state: 'stale' } });
   resolveCurrentFilmEdge(); scheduleSave();
   wantedGen++; // any older render is obsolete, including during the debounce
@@ -1317,10 +1349,10 @@ function savePairDecode(path: string, decode: DecodeSettings): Promise<void> {
   pairDecodeSave = pairDecodeSave.catch(() => {}).then(async () => {
     if (get().externalEditConflict) throw new Error('EXTERNAL_EDIT_CONFLICT: Resolve the current conflict before saving.');
     let own = pairSourceSidecars.get(path);
-    if (!own) { const raw = await platform().sidecarLoad(path); own = raw ? decodeSidecar(raw) : newSidecar(); }
+    if (!own) { const raw = await loadPhotoEdits(path); own = raw ? decodeSidecar(raw) : newSidecar(); }
     const next = { ...own, decode, state: own.state === 'processed' ? 'stale' as const : own.state };
     try {
-      await platform().sidecarSave(path, encodeSidecar(next));
+      await savePhotoEdits(path, encodeSidecar(next));
       pairSourceSidecars.set(path, next);
     } catch (e) {
       if (String(e).includes('EXTERNAL_EDIT_CONFLICT')) markExternalConflict();
@@ -1337,8 +1369,8 @@ async function setPairDecode(fn: (d: DecodeSettings) => DecodeSettings) {
   try { await savePairDecode(hole.path, next); }
   catch (e) { if (get().selection === s.selection) noteError(tz('Pair white balance', '半格白平衡'), e); }
 }
-export function setPairPlacement(side: PairSide, fn: (p: PairPlacement) => PairPlacement, defer = true) {
-  updatePair((p) => p[side] ? { ...p, [side]: { ...p[side], placement: fn(p[side]!.placement) } } : p, { defer });
+export function setPairPlacement(side: PairSide, fn: (p: PairPlacement) => PairPlacement, defer = true, coalesce = false) {
+  updatePair((p) => p[side] ? { ...p, [side]: { ...p[side], placement: fn(p[side]!.placement) } } : p, { defer, coalesce });
 }
 export function commitPairPlacement() {
   if (pairTimer) { clearTimeout(pairTimer); pairTimer = null; void requestPrint(); }
@@ -1364,7 +1396,7 @@ export async function setPairHole(side: PairSide, path: string | null) {
     let hole = null;
     let sourceSidecar: Sidecar | null = null;
     if (path) {
-      const raw = await platform().sidecarLoad(path); const own = raw ? decodeSidecar(raw) : newSidecar();
+      const raw = await loadPhotoEdits(path); const own = raw ? decodeSidecar(raw) : newSidecar();
       sourceSidecar = own;
       hole = { ...newHole(path), decode: own.decode, geometry: own.geometry };
     }
@@ -1398,7 +1430,7 @@ export async function removePair() {
   const s = get(); if (!s.pair || !s.selection || s.batchExporting) return;
   try {
     await flushSave();
-    if (get().externalEditConflict) return;
+    if (get().externalEditConflict || hasUnsavedEdits()) return;
     await platform().pairDelete(s.selection); await closeEngineSession();
     const frames = get().frames.filter((f) => f.path !== s.selection);
     set({ frames, selection: null, picked: [], pair: null, pairInfo: null, pairLayer: 'film', pairPlacing: false });
@@ -1413,7 +1445,7 @@ export function recomputeFilmFormat() {
   if (Math.abs(mm - p.filmFormatMM) > 0.001) {
     set({ sidecar: { ...get().sidecar, params: { ...get().sidecar.params, filmFormatMM: mm } } });
     scheduleSave();
-    void requestPrint();
+    void requestPrint(true);
   }
 }
 
@@ -1446,6 +1478,11 @@ export async function openFolder(dir: string) {
     // An explicit folder open restores only that folder's pair recipes.
     // Single-file open below never scans the parent or revives an old roll.
     if (platform().pairList) files.push(...await platform().pairList(dir));
+    if (!files.length) {
+      set({ status: tz('No supported photographs were found in this folder or its subfolders. Use Open photographs… to select files directly.',
+        '所选文件夹及其子文件夹中没有支持的照片。可使用“打开照片…”直接选择文件。') });
+      return;
+    }
     await setLibrary(dir, files);
     settingsStore.getState().set('lastFolder', dir);
     const first = get().frames[0];
@@ -1456,7 +1493,7 @@ export async function openFolder(dir: string) {
 }
 
 /** One door for dropped, argv and dialog paths (`Session.dropped(files:)`). */
-export async function openPaths(paths: string[]) {
+export async function openPaths(paths: string[], libraryEdits: Record<string, LibraryBinding> = {}, selecting?: string) {
   if (get().batchExporting || !paths.length) return;
   try {
     let entries = await platform().expandPaths(paths);
@@ -1481,49 +1518,71 @@ export async function openPaths(paths: string[]) {
     // before editing; source files and the shared recipe remain untouched.
     entries = await Promise.all(entries.map(async (entry) => {
       if (!isPairPath(entry.path)) return entry;
+      // Library variants own their layout in the opaque edit document. Reading
+      // the shared recipe is safe; editing must never rewrite that recipe.
+      if (libraryEdits[entry.path]) return entry;
       const pair = decodePair(await platform().pairLoad(entry.path));
       if (!pair) throw new Error(tz('The pair recipe is missing or invalid.', '半格拼接文件不存在或格式无效。'));
       const own = await platform().pairList(pair.folder);
       const samePath = (p: string) => p.replaceAll('\\', '/').toLocaleLowerCase();
       if (own.some((f) => samePath(f.path) === samePath(entry.path))) return entry;
-      const saved = await platform().sidecarLoad(entry.path);
+      const saved = await loadPhotoEdits(entry.path);
       const imported = await platform().pairCreate(pair.folder, encodePair(pair));
-      if (saved) await platform().sidecarSave(imported.path, saved);
+      if (saved) await savePhotoEdits(imported.path, saved);
       copiedPair = true;
       return imported;
     }));
-    await setLibrary(folder, entries);
-    await select(get().frames[0]!.path);
+    await setLibrary(folder, entries, libraryEdits);
+    await select(selecting && get().frames.some((frame) => frame.path === selecting) ? selecting : get().frames[0]!.path);
     if (copiedPair) set({ status: tz('Imported an editable copy of the pair; the shared recipe was kept.', '已导入可编辑的半格副本，原拼接文件已保留。') });
   } catch (e) {
     noteError(tz('Opening', '打开'), e);
   }
 }
 
-async function setLibrary(folder: string, files: FileEntry[]) {
+let libraryGeneration = 0;
+export const hasUnsavedEdits = () => savePending || !!saveTask;
+export async function closeLibraryEditor() {
+  endGesture();
+  await flushSave();
+  if (hasUnsavedEdits() || get().externalEditConflict) throw new Error(tz('Save the current edits before closing the library.', '请先保存当前编辑，再关闭图库。'));
+  await closeEngineSession();
+  libraryGeneration++;
+  bindLibraryEdits({});
+  frameImages.print = null; frameImages.original = null;
+  set({ selection: null, frames: [], picked: [], folder: null, nativeSize: null, metadata: null, badge: null, imageVersion: get().imageVersion + 1 });
+}
+async function setLibrary(folder: string, files: FileEntry[], libraryEdits: Record<string, LibraryBinding> = {}) {
+  endGesture();
   foregroundWork();
   importPreviews.cancel();
   files = frameOrder.apply(folder, files);
   await flushSave();
   if (get().externalEditConflict) throw new Error(tz('Resolve the external edit conflict before opening another folder.', '请先处理外部编辑冲突，再打开其他文件夹。'));
+  if (hasUnsavedEdits()) throw new Error(tz('The current edits could not be saved. Resolve the saving error before opening another folder.', '当前编辑未能保存，请先处理保存错误，再打开其他文件夹。'));
   await closeEngineSession();
+  bindLibraryEdits(libraryEdits);
   thumbs.reset();
   frameImages.print = null;
   frameImages.original = null;
   set({ folder, frames: files, selection: null, picked: [], savedGeometry: {}, thumbVersion: get().thumbVersion + 1, imageVersion: get().imageVersion + 1, badge: null });
   queueImportPreviews();
   void platform().setTitle(`SpektraLab — ${baseName(folder)}`);
-  // The thumbnails' crop masks come from each frame's saved geometry.
-  void Promise.all(
-    files.map(async (f) => {
-      const raw = await platform().sidecarLoad(f.path).catch(() => null);
-      return raw ? ([f.path, decodeSidecar(raw).geometry] as const) : null;
-    }),
-  ).then((rows) => {
+  // Bound background IPC so a large roll cannot queue thousands of sidecar
+  // reads ahead of the selected frame. Old rolls must not publish late masks.
+  const generation = ++libraryGeneration;
+  void (async () => {
     const g: Record<string, Geometry> = {};
-    for (const r of rows) if (r) g[r[0]] = r[1];
-    set({ savedGeometry: { ...g, ...get().savedGeometry } });
-  });
+    for (let start = 0; start < files.length; start += 8) {
+      if (generation !== libraryGeneration) return;
+      const rows = await Promise.all(files.slice(start, start + 8).map(async (f) => {
+        const raw = await loadPhotoEdits(f.path).catch(() => null);
+        return raw ? ([f.path, decodeSidecar(raw).geometry] as const) : null;
+      }));
+      for (const r of rows) if (r) g[r[0]] = r[1];
+    }
+    if (generation === libraryGeneration) set({ savedGeometry: { ...g, ...get().savedGeometry } });
+  })();
 }
 
 /** Move one thumbnail into the hovered slot without touching selection,
@@ -1617,12 +1676,12 @@ export async function select(path: string, options: { externalReload?: boolean; 
   if (!options.externalReload) {
     await flushSave();
     if (gen !== openGen) return;
-    if (get().externalEditConflict) { thumbs.setPaused?.(false); return; }
+    if (get().externalEditConflict || hasUnsavedEdits()) { thumbs.setPaused?.(false); return; }
     closing = closeEngineSession();
     frameImages.print = null;
     frameImages.original = null;
   }
-  const raw = await platform().sidecarLoad(path).catch(() => null);
+  const raw = await loadPhotoEdits(path);
   if (gen !== openGen) return;
   const loaded = raw ? decodeSidecar(raw) : newSidecar();
   let sidecar = filmStageSidecar(loaded);
@@ -1630,12 +1689,12 @@ export async function select(path: string, options: { externalReload?: boolean; 
   const sources = new Map<string, Sidecar>();
   let pairDocument: string | null = null;
   if (isPairPath(path)) {
-    pair = decodePair(await platform().pairLoad(path));
+    pair = decodePair(libraryBinding(path) ? (raw as Record<string, unknown> | null)?._spkLibraryPair ?? await platform().pairLoad(path) : await platform().pairLoad(path));
     if (!pair) { noteError(tz('Opening pair', '打开半格拼接'), new Error(tz('The pair recipe is missing or invalid.', '半格拼接文件不存在或格式无效。'))); return; }
     pairDocument = JSON.stringify(encodePair(pair));
     for (const side of PAIR_SIDES) {
       const hole: PairHole | null = pair[side]; if (!hole) continue;
-      const ownRaw: unknown = await platform().sidecarLoad(hole.path).catch(() => null);
+      const ownRaw: unknown = await loadPhotoEdits(hole.path).catch(() => null);
       const own: Sidecar = ownRaw ? decodeSidecar(ownRaw) : newSidecar();
       sources.set(hole.path, own);
       pair = { ...pair, [side]: { ...hole, decode: own.decode, geometry: own.geometry } };
@@ -1660,6 +1719,8 @@ export async function select(path: string, options: { externalReload?: boolean; 
   if (options.externalReload) closing = closeEngineSession();
   if (options.externalReload) { frameImages.print = null; frameImages.original = null; }
   savedPair = pairDocument ? { path, value: pairDocument } : null;
+  wantsDevelop = !!pair || !isUntouched(sidecar);
+  endGesture();
   savedDocument = { path, content: sidecarContent(raw) };
   pairSourceSidecars.clear(); for (const [source, own] of sources) pairSourceSidecars.set(source, own);
   savePending = false;
@@ -1756,7 +1817,10 @@ export async function refreshOriginal(): Promise<void> {
         if (gen === originalGeneration && current()) {
           frameImages.original = image;
           lastOriginalKey = key;
-          set({ imageVersion: get().imageVersion + 1 });
+          set({ imageVersion: get().imageVersion + 1, ...(!wantsDevelop && !frameImages.print ? {
+            badge: (Math.max(image.width, image.height) >= Math.max(s.nativeSize?.width ?? 0, s.nativeSize?.height ?? 0) ? 'full' : 'preview') as 'full' | 'preview',
+            status: tz('Original decode · choose Solve or edit a setting to develop.', '解码原图 · 点击配光或修改参数后显影。'),
+          } : {}) });
           cacheDisplay(cacheKey, image, s.nativeSize, false);
         }
       } catch (e) {
@@ -1876,14 +1940,10 @@ async function develop(path: string, gen: number) {
     );
     recomputeFilmFormat();
     // `recomputeFilmFormat` may have queued a render already.
-    if (!inFlight) await requestPrint();
+    if (!inFlight) await requestPrint(true);
     if (gen !== openGen) return;
-    void refreshOriginal();
-    const sc = get().sidecar;
-    if (sc.state === 'unprocessed') {
-      set({ sidecar: { ...sc, state: 'processed' } });
-      scheduleSave();
-    }
+    if (wantsDevelop) void refreshOriginal();
+    else await refreshOriginal();
   } catch (e) {
     if (gen === openGen) noteError(tz(`Opening ${baseName(path)}`, `打开 ${baseName(path)}`), e);
   } finally {
@@ -1939,12 +1999,12 @@ export function copySettings() {
 }
 
 async function pasteOffline(clip: SettingsClip, path: string): Promise<boolean> {
-  const raw = await platform().sidecarLoad(path).catch(() => null);
+  const raw = await loadPhotoEdits(path).catch(() => null);
   const target = raw ? decodeSidecar(raw) : newSidecar();
   const applied = applyClip(clip, target);
   const next = filmStageSidecar(applied);
   if (!clipChanges(clip, target) && next === applied) return false;
-  await platform().sidecarSave(path, encodeSidecar({ ...next, state: next.state === 'processed' ? 'stale' : next.state }));
+  await savePhotoEdits(path, encodeSidecar({ ...next, state: 'stale' }));
   return true;
 }
 
@@ -1995,7 +2055,7 @@ export function setView(v: Partial<ViewState>) {
   set({ view: { ...get().view, ...v } });
   // Pan never changes detail; crossing a zoom/detail threshold requests a
   // fresh cached view, and the existing generation scheduler coalesces it.
-  if (hostViews() && before !== viewLongEdge(get()) && !get().batchExporting) void requestPrint();
+  if (hostViews() && before !== viewLongEdge(get()) && !get().batchExporting) void requestPrint(true);
   void refreshOriginal();
 }
 export function zoomToFit() {
@@ -2016,7 +2076,7 @@ export function noteCanvasPx(width: number, height: number) {
   if (c.width !== width || c.height !== height) {
     const before = viewLongEdge(get());
     set({ canvasPx: { width, height } });
-    if (hostViews() && before !== viewLongEdge(get()) && !get().batchExporting) void requestPrint();
+    if (hostViews() && before !== viewLongEdge(get()) && !get().batchExporting) void requestPrint(true);
     void refreshOriginal();
   }
 }
@@ -2037,7 +2097,7 @@ export function setTool(tool: Tool) {
   }
   set({ tool });
   if (tool === 'crop') void refreshOriginal();
-  if (previous !== tool && (previous === 'crop' || tool === 'crop') && hostViews() && !get().batchExporting) void requestPrint();
+  if (previous !== tool && (previous === 'crop' || tool === 'crop') && hostViews() && !get().batchExporting) void requestPrint(tool !== 'crop');
 }
 export function setOriginal(on: boolean) {
   if (on && sourceGeometryFor(get().sidecar.params, get().sidecar.geometry, get().gate)) return;

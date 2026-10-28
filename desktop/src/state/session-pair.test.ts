@@ -55,6 +55,20 @@ beforeEach(async () => {
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('half-frame pair editing lifecycle', () => {
+  it('undoes a long canvas placement drag as one gesture even across the 500ms coalescing window', async () => {
+    await session.select(path); const before = state().pair!.left!.placement;
+    session.beginGesture();
+    for (let step = 1; step <= 4; step++) {
+      clock += 700;
+      session.setPairPlacement('left', (p) => ({ ...p, x: step / 10, y: step / 20 }), true, true);
+    }
+    session.commitPairPlacement();
+    expect(state().undo).toHaveLength(1);
+    session.undo(); await settle();
+    expect(state().pair!.left!.placement).toEqual(before);
+    session.redo(); await settle();
+    expect(state().pair!.left!.placement).toMatchObject({ x: .4, y: .2 });
+  });
   it('persists native meter readings without an undo/rerender edit and sends them unchanged after moving and reopening', async () => {
     const metered = { ...info, left: { ...info.left!, metered_ev: 1.25, metered_for: 'native-left-v1' },
       right: { ...info.right!, metered_ev: -.75, metered_for: 'native-right-v1' } };

@@ -2,6 +2,7 @@
 
 import type { AppPaths, FileEntry, Platform } from './index';
 import { decodePair } from '@shared/pair';
+import { encodeSidecar, newSidecar } from '@shared/sidecar';
 
 const ROLL = '/mock/Roll 01';
 const NAMES = ['DSC_0001.NEF', 'DSC_0002.NEF', 'DSC_0003.NEF', 'DSC_0004.ARW', 'DSC_0005.ARW', 'IMG_0006.CR3', 'scan_0007.tif', 'scan_0008.jpg'];
@@ -36,7 +37,14 @@ export function browserPlatform(): Platform {
       paths.flatMap((p) => (/\.[a-z0-9]+$/i.test(p) ? [{ path: p, name: p.split('/').pop()!, size: 1, mtime_ms: 0 }] : entries(p))),
     async sidecarLoad(image) {
       const v = ls()?.getItem('sidecar:' + image);
-      return v ? JSON.parse(v) : null;
+      if (v) return JSON.parse(v);
+      // The fixed demo roll represents developed samples. ?fresh=1 exercises
+      // first-open source viewing; native photographs always use real sidecars.
+      if (!new URLSearchParams(window.location.search).has('fresh') && image.startsWith(ROLL + '/') && NAMES.includes(image.slice(ROLL.length + 1))) {
+        const sample = newSidecar(); sample.state = 'processed';
+        return encodeSidecar(sample);
+      }
+      return null;
     },
     async sidecarSave(image, sidecar) {
       ls()?.setItem('sidecar:' + image, JSON.stringify(sidecar));
@@ -80,12 +88,15 @@ export function browserPlatform(): Platform {
       home: '/mock',
       pictures: '/mock',
       os: 'browser',
-      version: '1.3.1',
+      version: '1.3.2',
     }),
     pickFolder: async () => ROLL,
     pickFiles: async () => entries(ROLL).slice(0, 3).map((e) => e.path),
+    pickDocument: async () => null,
     pickSave: async (_t, defaultPath) => defaultPath,
     reveal: async (p) => console.info('reveal', p),
+    pickApplication: async () => null,
+    openExportedFiles: async () => { throw new Error('Opening exported files requires the desktop application.'); },
     openUrl: async (u) => void window.open(u, '_blank'),
     message: async (title, text) => window.alert(`${title}\n\n${text}`),
     confirm: async (title, text) => window.confirm(`${title}\n\n${text}`),

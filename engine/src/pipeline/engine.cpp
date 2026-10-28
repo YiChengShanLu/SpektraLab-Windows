@@ -45,6 +45,10 @@
 #include <windows.h>
 #include <fcntl.h>
 #include <io.h>
+// The Windows RPC headers define small as char; it is an image name below.
+#ifdef small
+#undef small
+#endif
 #endif
 
 #include "spektrafilm/spk_engine.h"
@@ -1153,7 +1157,7 @@ bool negative_for(spk_session* session, const Tier& tier, Progress* progress, Im
     session->pipeline->overscan_frame(state.overscan_frame_w, state.overscan_frame_h);
     if (progress) progress->auto_exposure_ev = state.applied_ev;
     // The negative is what every subsequent slider drag reprints from, so it
-    // has to outlive the frame arena. Copying it here is also what makes a
+    // has to outlive the frame arena. Keeping it here is also what makes a
     // reprint grain-consistent for free: the realisation is baked in and is
     // never redrawn.
     gpu::Gpu* gpu = session->engine->gpu;
@@ -1163,9 +1167,8 @@ bool negative_for(spk_session* session, const Tier& tier, Progress* progress, Im
     // The cached negative is the other holding RFC-020 §4.7 names: every
     // reprint reads it, it lives as long as the session, and at the full
     // tier it is the second 1.22 GB plane.
-    kept.buf = gpu->alloc_file_backed(negative.bytes(), error);
-    if (!kept.buf || !gpu->copy(kept.buf.get(), 0, negative.buf.get(), 0,
-                                negative.bytes(), error)) return false;
+    kept.buf = gpu->make_persistent(std::move(negative.buf), negative.bytes(), error);
+    if (!kept.buf) return false;
     state.negative = kept;
     state.has_negative = true;
     out = kept;
@@ -1481,7 +1484,7 @@ bool spk::view::resume(spk_session* session, std::string& error) {
 }
 
 bool spk::view::render_source(spk_session* session, uint32_t long_edge, const std::string& display,
-                              Result& result, std::string& error) {
+                              Result& result, std::string& error, bool rgba16) {
     if (!session || (display != "sRGB" && display != "Display P3") || long_edge > 65536) {
         error = "source: invalid session, size or display space"; return false;
     }
@@ -1495,7 +1498,13 @@ bool spk::view::render_source(spk_session* session, uint32_t long_edge, const st
     struct EndFrame { gpu::Gpu* gpu; ~EndFrame() { gpu->end_frame(); } } end{gpu};
     const auto start = std::chrono::steady_clock::now();
     Image source;
-    if (!downscale(gpu, session->source, long_edge, source, error) || !gpu->flush(error)) return false;
+    // The live tier contains this exact filtered, linear decoded source.
+    // Reuse it for compare/picking rather than filtering two full-size planes
+    // again after the film render. Other zoom sizes keep their existing path.
+    if (long_edge == tier_long_edge(session->params, kTiers[0])) {
+        if (!tier_image(session, kTiers[0], source, error)) return false;
+    } else if (!downscale(gpu, session->source, long_edge, source, error)) return false;
+    if (!gpu->flush(error)) return false;
     Mat3 matrix;
     if (!session->engine->colour.matrix_RGB_to_RGB("ProPhoto RGB", display, "CAT02", matrix, error)) return false;
     double row[9]; matrix.to_row_major(row); float column[9];
@@ -1505,16 +1514,17 @@ bool spk::view::render_source(spk_session* session, uint32_t long_edge, const st
     uint32_t meta[] = {uint32_t(source.pixels()), 0}; // sRGB/P3 share the sRGB OETF
     if (!gpu->dispatch("spk_cctf_encode_matrix", {gpu::Arg::buf(source.buf), gpu::Arg::inline_bytes(column, 9),
             gpu::Arg::inline_bytes(meta, 2), gpu::Arg::buf(encoded)}, source.pixels(), error) || !gpu->flush(error)) return false;
-    auto packed = gpu->alloc(source.pixels() * 4, error);
+    const uint32_t stride = rgba16 ? 8 : 4;
+    auto packed = gpu->alloc(source.pixels() * stride, error);
     auto stats = gpu->alloc_zeroed(12, error);
     if (!packed || !stats) return false;
-    uint32_t packing[] = {uint32_t(source.pixels()), 4, 8, 4, 0};
+    uint32_t packing[] = {uint32_t(source.pixels()), 4, rgba16 ? 16u : 8u, 4, 0};
     if (!gpu->dispatch("spk_view_pack", {gpu::Arg::buf(encoded), gpu::Arg::inline_bytes(packing, 5),
             gpu::Arg::buf(packed), gpu::Arg::buf(stats)}, source.pixels(), error) || !gpu->flush(error)) return false;
     Result next;
     next.post_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     const auto read = std::chrono::steady_clock::now();
-    next.pixels.resize(source.pixels() * 4);
+    next.pixels.resize(source.pixels() * stride);
     if (!gpu->read(packed.get(), 0, next.pixels.data(), next.pixels.size(), error)) return false;
     next.readback_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - read).count();
     next.width = source.w; next.height = source.h;
@@ -1757,6 +1767,9 @@ bool spk::view::render(spk_session* session, const Request& request, Result& res
                            rgb.pixels(), error) || !gpu->flush(error)) return false;
         packed_print = std::move(packed);
         if (!request.cineon) state.view_print = packed_print;
+        // Printing and display grading need different scratch sets. Keep a
+        // plane for repeated view edits, rather than the entire film high-water.
+        if (tier->long_edge == 0 && !request.export_intent) gpu->trim_pool(source.bytes());
     } else {
         session->progress.auto_exposure_ev = state.applied_ev;
     }

@@ -104,6 +104,7 @@ export interface HelloResult {
   export_spaces?: string[];
   /** Processed display pixel transports, independent of output/file encodings. */
   view_formats?: PixelFormat[];
+  source_formats?: PixelFormat[];
   /** Optional RAW preview modes; embedded-only never falls back to RAW decode. */
   thumbnail_options?: string[];
   tiff_options?: string[];
@@ -161,6 +162,7 @@ export interface PairInfo {
 }
 
 export interface OpenResult {
+  raw_decode?: { requested: string; effective: 'headroom' | 'compatible16'; linear_output: string };
   session: string;
   width: number;
   height: number;

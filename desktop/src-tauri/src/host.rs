@@ -214,6 +214,9 @@ impl HostManager {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         if !launch.mock {
+            if let Ok(root) = self.app.path().app_data_dir() {
+                cmd.arg("--decode-cache").arg(root.join("DecodeCache-v1"));
+            }
             let config = crate::diagnostics::configuration(&self.app);
             cmd.args(["--log-level", &config.level]);
             if config.per_node { cmd.env("SPEKTRAFILM_NODE_TIMINGS", "1"); }

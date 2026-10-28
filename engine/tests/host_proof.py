@@ -84,6 +84,7 @@ def exercise(host, directory):
     assert pixels and max(small["image"]["width"], small["image"]["height"]) == 13
     report, _ = good(host, "memory_report")
     assert len(report["persistent"]["sessions"]) == 1, "private proof leaked a session"
+    assert report['pool']['free_bytes'] == 0 and report['pool']['pending_bytes'] == 0, 'private export retained idle frame buffers'
     _, restored = good(host, "render_view", view)
     assert restored == before, "private proof lost the suspended editor cache"
     assert hello["tiff_options"] == ["lzw", "preview-page"]

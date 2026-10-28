@@ -172,6 +172,13 @@ bool process(gpu::Gpu* gpu,const Image& print,const Request& req,const Json& tra
         result.post_ms=ms(started);
         result.width=w;result.height=h;result.source_width=print.w;result.source_height=print.h;
         if(device_output){device_output->w=w;device_output->h=h;device_output->c=2;device_output->buf=std::move(packed);return true;}
+        if(req.export_intent){
+            // Packing has finished. Keep only the packed output while creating
+            // its CPU copy, instead of overlapping it with dead full-float planes.
+            current.buf.reset();curves.reset();stats.reset();
+            gpu->trim_pool(0);
+            result.post_ms=ms(started);
+        }
         auto read=Clock::now();result.pixels.resize(padded_bytes);
         if(!gpu->read(packed.get(),0,result.pixels.data(),padded_bytes,error))return false;
         result.pixels.resize(bytes);

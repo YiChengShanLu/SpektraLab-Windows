@@ -2,7 +2,7 @@
 //   Pre-Dev:  Latitude · Input / Camera · Film Format · Scene Placement
 //   Post-Dev: White Balance · Exposure · Curve · Color Balance (Layer 2)
 
-import { useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { Checkbox, NumberField, PillMenu, ScrubSlider, Section, SegmentedSwitch, ToggleRow, signed } from '../controls/controls';
 import { isChinese, t, tz } from '../i18n';
 import { cameraParams, pairFocus, setCamera, shownAdjustments, shownDecode as selectedDecode, updatePair, canPickNeutral, currentPlacementWindow, hostRedecodes, placeScene, placementReady, resetScenePlacement, setAdjustments, setDecode, setFilmFrame, setFilmSide, setParams, setSideLengthMM, startNeutralPick, useSession } from '../state/session';
@@ -19,7 +19,7 @@ import {
   aeMethodOf,
   applyAEMethod,
 } from '@shared/params';
-import { type ColorZone, type CurveChannel, CURVE_CHANNELS, isNeutral } from '@shared/adjustments';
+import { type CurveChannel, CURVE_CHANNELS, isNeutral } from '@shared/adjustments';
 import {
   type AsShot,
   TEMPERATURE_RANGE,
@@ -35,8 +35,9 @@ import {
   withTint,
 } from '@shared/whiteBalance';
 import { CurveEditor } from './CurveEditor';
+import { ColorBalanceSection } from './ColorBalanceEditor';
 import { unsupportedReason } from './gate';
-import { type LatitudeReply, type PlacementSide, placementMessage } from '@shared/latitude';
+import { type LatitudeReply, type PlacementSide, latitudeReadout, placementMessage } from '@shared/latitude';
 
 export function RightRail() {
   const tab = useSettings((s) => s.parametersTab);
@@ -90,35 +91,43 @@ function LatitudeSection() {
 }
 
 function LatitudePlot({ reply }: { reply: LatitudeReply | null }) {
-  const W = 240;
-  const H = 60;
-  if (!reply) return <svg className="plot" viewBox={`0 0 ${W} ${H}`} height={H} />;
+  const W = 240, H = 60, id = useId();
+  if (!reply) return <svg className="plot" viewBox={`0 0 ${W} 92`} height={92} />;
   const h = reply.scene.histogram;
-  const f = h.placed_fractions ?? h.fractions;
+  const readout = latitudeReadout(reply), f = readout.fractions;
   const peak = Math.max(...f, 1e-9);
-  const x = (ev: number) => ((ev - h.lo_ev) / (h.hi_ev - h.lo_ev)) * W;
-  const n = f.length;
-  let below = 0;
-  let above = 0;
-  let total = 0;
-  f.forEach((v, i) => {
-    const c = h.lo_ev + ((i + 0.5) * (h.hi_ev - h.lo_ev)) / n;
-    total += v;
-    if (c < reply.medium.shadow_ev) below += v;
-    else if (c > reply.medium.highlight_ev) above += v;
-  });
-  const pct = (v: number) => ((v / (total || 1)) * 100).toFixed(1) + ' %';
+  const x = (ev: number) => (ev + 8) / 16 * W;
+  const pct = (v: number) => ((v / (readout.total || 1)) * 100).toFixed(1) + ' %';
+  const evText = (v: number) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(2)}`;
+  const under = f.reduce((sum, v, i) => sum + (readout.centres[i]! < -8 ? v : 0), 0);
+  const over = f.reduce((sum, v, i) => sum + (readout.centres[i]! > 8 ? v : 0), 0);
   return (
     <>
-      <svg className="plot" viewBox={`0 0 ${W} ${H}`} height={H} data-testid="latitude-plot">
-        <rect x={x(reply.medium.shadow_ev)} y={0} width={x(reply.medium.highlight_ev) - x(reply.medium.shadow_ev)} height={H} fill="var(--latitude-beyond)" />
-        {f.map((v, i) => (
-          <rect key={i} x={(i / n) * W} y={H - (v / peak) * (H - 4)} width={W / n} height={(v / peak) * (H - 4)} fill="var(--latitude-inside)" />
-        ))}
+      <svg className="plot" viewBox={`0 0 ${W} 92`} height={92} data-testid="latitude-plot" aria-label={t('sectionLatitude')}>
+        <defs><clipPath id={`${id}-clip`}><rect width={W} height={76} /></clipPath>
+          <linearGradient id={`${id}-band`}>{readout.separation.map((sample, index) => <stop key={index}
+            offset={Math.max(0, Math.min(1, (sample.ev + 8) / 16))} stopColor="var(--text)" stopOpacity={sample.strength * .9} />)}</linearGradient></defs>
+        <g clipPath={`url(#${id}-clip)`}>
+          <rect x={x(reply.medium.shadow_ev)} width={x(reply.medium.highlight_ev) - x(reply.medium.shadow_ev)} height={H} fill="var(--latitude-beyond)" />
+          {Array.from({ length: 9 }, (_, i) => i * 2 - 8).map((ev) => <line key={ev} x1={x(ev)} x2={x(ev)} y2={H} stroke={ev === 0 ? 'var(--plot-mid-grey)' : 'var(--plot-grid)'} strokeWidth={.5} />)}
+          {f.map((v, i) => <rect key={i} x={x(h.lo_ev + i * (h.hi_ev - h.lo_ev) / f.length)} y={H - v / peak * (H - 5)}
+            width={(h.hi_ev - h.lo_ev) / f.length / 16 * W} height={v / peak * (H - 5)} fill={readout.centres[i]! < reply.medium.shadow_ev || readout.centres[i]! > reply.medium.highlight_ev ? 'var(--accent)' : 'var(--latitude-inside)'} />)}
+          <rect y={67} width={W} height={6} rx={3} fill={`url(#${id}-band)`} data-testid="latitude-separation-band" />
+          {[reply.medium.shadow_ev, reply.medium.highlight_ev].map((ev, index) => <g key={index}>
+            <line x1={x(ev)} x2={x(ev)} y1={1} y2={75} stroke="var(--secondary-text)" strokeWidth={.75} strokeDasharray="2 1.5" />
+            <text x={Math.max(2, Math.min(W - 2, x(ev) + (index ? 3 : -3)))} y={10} textAnchor={index ? x(ev) > W - 35 ? 'end' : 'start' : x(ev) < 35 ? 'start' : 'end'}
+              fill="var(--text)" fontSize={9} stroke="var(--plot)" strokeWidth={2} paintOrder="stroke">{evText(ev)}</text>
+          </g>)}
+          {under > .0005 && <path d="M2 3 H8 L2 9 Z" fill="var(--accent)" />}
+          {over > .0005 && <path d={`M${W - 2} 3 H${W - 8} L${W - 2} 9 Z`} fill="var(--accent)" />}
+        </g>
+        {Array.from({ length: 9 }, (_, i) => i * 2 - 8).map((ev) => <text key={ev} x={x(ev)} y={87} textAnchor={ev === -8 ? 'start' : ev === 8 ? 'end' : 'middle'} fill="var(--dim)" fontSize={9}>{ev > 0 ? '+' : ''}{ev}</text>)}
       </svg>
       <div className="caption num">
-        {t('latitudeBelow')} {pct(below)} · {t('latitudeWithin')} {pct(total - below - above)} · {t('latitudeAbove')} {pct(above)} · {reply.medium.latitude_stops.toFixed(2)} {t('latitudeHeld')}
+        {t('latitudeBelow')} {pct(readout.below)} · {t('latitudeWithin')} {pct(readout.within)} · {t('latitudeAbove')} {pct(readout.above)}
       </div>
+      <div className="caption num" data-testid="latitude-range">{reply.medium.latitude_stops.toFixed(2)} {t('latitudeHeld')} · {evText(reply.medium.shadow_ev)} – {evText(reply.medium.highlight_ev)}
+        {readout.core && <> · {tz('Full separation', '完整层次')} {evText(readout.core[0])} – {evText(readout.core[1])}</>}</div>
     </>
   );
 }
@@ -164,6 +173,13 @@ function CameraSection() {
       ]}
     >
       <PillMenu label={t('cameraMetering')} value={ae} options={options} fill onChange={(v) => setCamera((q) => applyAEMethod(q, v))} testId="metering" />
+      <PillMenu label={tz('RAW decode', 'RAW 解码')} value={selectedDecode(state).rawMode ?? 'compatible16'}
+        options={[
+          { value: 'auto', label: tz('Auto · expanded linear', '自动 · 线性高光') },
+          { value: 'compatible16', label: tz('Compatible 16-bit', '兼容 16 位') },
+          { value: 'headroom', label: tz('Expanded linear (Bayer)', '线性高光（Bayer）') },
+        ]} disabled={!!wb.reason} reason={wb.reason ?? undefined}
+        onChange={(rawMode) => setDecode((d) => ({ ...d, rawMode }))} testId="raw-decode-mode" />
       {hole && focus && <PillMenu label={tz('Exposure scope', '曝光范围')} value={hole.exposureScope}
         options={[{ value: 'frame', label: tz('Frame', '这一格') }, { value: 'film', label: tz('+ Film', '+ 胶片') }]}
         onChange={(v) => updatePair((p) => ({ ...p, [focus]: { ...p[focus]!, exposureScope: v } }))} />}
@@ -425,86 +441,5 @@ function CurveSection() {
       </div>
       <CurveEditor channel={ch} />
     </Section>
-  );
-}
-
-const ZONES: { key: 'master' | 'shadows' | 'midtones' | 'highlights'; label: () => string }[] = [
-  { key: 'master', label: () => tz('Master', '整体') },
-  { key: 'shadows', label: () => t('exposureShadows') },
-  { key: 'midtones', label: () => t('balanceMidtones') },
-  { key: 'highlights', label: () => t('exposureHighlights') },
-];
-
-function ColorBalanceSection() {
-  const cb = useSession((s) => shownAdjustments(s).colorBalance);
-  const [zone, setZone] = useState<(typeof ZONES)[number]['key']>('master');
-  const z = cb[zone];
-  const setZ = (patch: Partial<ColorZone>) => setAdjustments((q) => ({ ...q, colorBalance: { ...q.colorBalance, [zone]: { ...q.colorBalance[zone], ...patch } } }));
-  return (
-    <Section
-      id="colorbalance"
-      title={t('sectionColorBalance')}
-      onReset={() => setAdjustments((q) => ({ ...q, colorBalance: { master: zero, shadows: zero, midtones: zero, highlights: zero } }))}
-      resetHelp={t('helpReset')}
-    >
-      <div className="row" style={{ gap: 4 }}>
-        {ZONES.map((zz) => (
-          <button key={zz.key} className={'btn' + (zz.key === zone ? ' primary' : '')} style={{ height: 18, padding: '0 8px', fontSize: 'var(--fs-small)' }} onClick={() => setZone(zz.key)}>
-            {zz.label()}
-          </button>
-        ))}
-      </div>
-      <HueWheel zone={z} onChange={setZ} />
-      <ScrubSlider label={tz('Hue', '色相')} value={z.hue} range={[0, 360]} snap={15} format={(v) => v.toFixed(0) + '°'} gradient="linear-gradient(90deg,#e8524e,#e8c04e,#62c462,#4ec0e8,#5d7de8,#d05bd0,#e8524e)" onChange={(v) => setZ({ hue: v })} />
-      <ScrubSlider label={t('exposureSaturation')} value={z.saturation} range={[0, 1]} snap={0.05} onChange={(v) => setZ({ saturation: v })} />
-      <ScrubSlider label={tz('Luminance', '亮度')} value={z.luminance} range={[-1, 1]} snap={0.05} format={signed(2)} onChange={(v) => setZ({ luminance: v })} />
-    </Section>
-  );
-}
-const zero: ColorZone = { hue: 0, saturation: 0, luminance: 0 };
-
-/** A small hue/saturation disc: drag to set both (the Mac's ColorWheel, simplified). */
-function HueWheel({ zone, onChange }: { zone: ColorZone; onChange: (z: Partial<ColorZone>) => void }) {
-  const ref = useRef<SVGSVGElement>(null);
-  const R = 46;
-  const set = (e: React.PointerEvent) => {
-    const r = ref.current!.getBoundingClientRect();
-    const dx = e.clientX - (r.left + r.width / 2);
-    const dy = e.clientY - (r.top + r.height / 2);
-    const sat = Math.min(1, Math.hypot(dx, dy) / R);
-    const hue = ((Math.atan2(-dy, dx) * 180) / Math.PI + 360) % 360;
-    onChange({ hue, saturation: sat });
-  };
-  const a = (zone.hue * Math.PI) / 180;
-  return (
-    <div className="row" style={{ justifyContent: 'center' }}>
-      <svg
-        ref={ref}
-        width={R * 2 + 6}
-        height={R * 2 + 6}
-        viewBox={`${-R - 3} ${-R - 3} ${R * 2 + 6} ${R * 2 + 6}`}
-        onPointerDown={(e) => {
-          (e.target as Element).setPointerCapture(e.pointerId);
-          set(e);
-        }}
-        onPointerMove={(e) => e.buttons && set(e)}
-        style={{ cursor: 'crosshair' }}
-      >
-        <defs>
-          <radialGradient id="wheel-fade">
-            <stop offset="0" stopColor="#2d2d2c" stopOpacity="1" />
-            <stop offset="1" stopColor="#2d2d2c" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-        <circle r={R} fill="none" stroke="url(#hue)" />
-        {Array.from({ length: 36 }, (_, i) => {
-          const a0 = (i * 10 * Math.PI) / 180;
-          const a1 = ((i + 1) * 10 * Math.PI) / 180;
-          return <path key={i} d={`M0 0 L${R * Math.cos(a0)} ${-R * Math.sin(a0)} A${R} ${R} 0 0 0 ${R * Math.cos(a1)} ${-R * Math.sin(a1)} Z`} fill={`hsl(${i * 10 + 5} 55% 50%)`} />;
-        })}
-        <circle r={R} fill="url(#wheel-fade)" />
-        <circle cx={zone.saturation * R * Math.cos(a)} cy={-zone.saturation * R * Math.sin(a)} r={4} fill="none" stroke="var(--knob)" strokeWidth={1.5} />
-      </svg>
-    </div>
   );
 }

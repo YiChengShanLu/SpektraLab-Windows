@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodeSidecar, encodeSidecar, newSidecar } from '@shared/sidecar';
 import type { HelloResult } from '@shared/protocol';
 import type * as SessionModule from './session';
+import type * as DisplayCache from './displayCache';
 const fake = vi.hoisted(() => ({ changes: vi.fn(), load: vi.fn(), save: vi.fn(), open: vi.fn(), close: vi.fn(), confirm: vi.fn(), invalidate: vi.fn() }));
 vi.mock('../platform', () => ({ platform: () => ({ agentChanges: fake.changes, sidecarLoad: fake.load, sidecarSave: fake.save,
-  confirm: fake.confirm, log: vi.fn(), setTitle: vi.fn() }), baseName: (p: string) => p.split('/').pop(), dirName: () => '/owned' }));
+  confirm: fake.confirm, log: vi.fn(), setTitle: vi.fn(), listImages: async () => [{ path: '/next/b.NEF', name: 'b.NEF', size: 1, mtime_ms: 0 }], pairList: async () => [] }), baseName: (p: string) => p.split('/').pop(), dirName: () => '/owned' }));
 vi.mock('./thumbs', () => ({ thumbs: { invalidate: fake.invalidate, setPrint: vi.fn() } }));
-vi.mock('./displayCache', () => ({ displayCacheKey: async () => null, readDisplayCache: async () => null, writeDisplayCache: async () => true,
+vi.mock('./displayCache', async (original) => ({ ...await original<typeof DisplayCache>(), displayCacheKey: async () => null, readDisplayCache: async () => null, writeDisplayCache: async () => true,
   forgetDisplayMemoryCache: vi.fn(), peekDisplayCache: vi.fn(() => null) }));
 vi.mock('../host/client', () => ({ HostCallError: class extends Error {}, host: () => ({ open: fake.open, close: fake.close,
   setParams: async () => ({}), renderView: async (_sid: string, tier: string) => ({ width: 2, height: 1, data: new Uint8Array(8), tier, ms: 1 }),
@@ -30,6 +31,22 @@ beforeEach(async () => {
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe('external edit journal', () => {
+  it.each(['photo', 'folder'])('keeps the edited photo when saving fails before opening another %s', async (target) => {
+    session.setAdjustments((a) => ({ ...a, exposure: 2 }));
+    fake.save.mockRejectedValue(new Error('Disk full'));
+    if (target === 'photo') await session.select(other);
+    else await session.openFolder('/next');
+    expect(state().selection).toBe(path);
+    expect(state().engineSession).toBe('old');
+    expect(state().sidecar.adjustments.exposure).toBe(2);
+    expect(session.hasUnsavedEdits()).toBe(true);
+    expect(fake.close).not.toHaveBeenCalled();
+    expect(fake.open).not.toHaveBeenCalled();
+    fake.save.mockResolvedValue('/owned/sidecar.json');
+    await session.flushSave();
+    expect(session.hasUnsavedEdits()).toBe(false);
+    expect(fake.save.mock.calls.at(-1)?.[1].adjustments.exposure).toBe(2);
+  });
   it('takes the first journal as a cursor, then refreshes a clean selected frame and invalidates other thumbnails', async () => {
     await session.pollAgentChanges(); expect(fake.load).not.toHaveBeenCalled(); expect(fake.open).not.toHaveBeenCalled();
     const next = saved(); next.adjustments.exposure = 1.75;

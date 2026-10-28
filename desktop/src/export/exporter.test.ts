@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { bindLibraryEdits } from '../library/edits';
+import type * as LibraryClient from '../library/client';
 import { ALL_FEATURES, featureGate, fullDelta } from '@shared/params';
 import { encodeSidecar, newSidecar } from '@shared/sidecar';
 import { StockCatalog } from '@shared/stocks';
@@ -11,7 +13,7 @@ import type * as PlatformModule from '../platform';
 const fake = vi.hoisted(() => ({
   request: vi.fn(), renderProof: vi.fn(), open: vi.fn(), close: vi.fn(), probe: vi.fn(),
   sidecarLoad: vi.fn(), ensureDir: vi.fn(), pathExists: vi.fn(), log: vi.fn(),
-  pairLoad: vi.fn(),
+  pairLoad: vi.fn(), library: vi.fn(),
 }));
 vi.mock('../host/client', () => ({ host: () => ({
   transport: { request: fake.request }, renderProof: fake.renderProof, open: fake.open, close: fake.close, probe: fake.probe,
@@ -19,6 +21,8 @@ vi.mock('../host/client', () => ({ host: () => ({
 vi.mock('../platform', async (original) => ({
   ...await original<typeof PlatformModule>(), platform: () => fake,
 }));
+vi.mock('../library/client', async (original) => ({ ...await original<typeof LibraryClient>(), libraryCall: fake.library }));
+afterEach(() => bindLibraryEdits({}));
 const catalog = new StockCatalog([
   { id: 'slide', name: 'Slide', stage: 'filming', type: 'positive', use: 'still', hasPreviewLUT: true },
 ]);
@@ -47,6 +51,17 @@ beforeEach(() => {
 });
 
 describe('host frame export', () => {
+  it('freezes the selected SDK variants, including unselected frames, without folder-sidecar fallback', async () => {
+    const paths = ['K:/新疆/a.ARW', 'K:/新疆/b.ARW'];
+    bindLibraryEdits(Object.fromEntries(paths.map((path, index) => [path, { library: 'L1', image: `i${index}`, variant: `v${index}`, position: 2 }])));
+    const originals = paths.map((_, index) => { const sidecar = structuredClone(newSidecar()); sidecar.adjustments.exposure = index + 1; return encodeSidecar(sidecar); });
+    fake.library.mockImplementation(async (_method, params) => ({ edit: originals[params.variant === 'v0' ? 0 : 1], revision: 7 }));
+    const frozen = await captureExportFrames(paths, null, catalog, ALL_FEATURES, false);
+    for (const original of originals) (original.adjustments as { exposure: number }).exposure = 9;
+    expect(frozen.map((entry) => 'frame' in entry ? entry.frame.adjustments.exposure : entry.error)).toEqual([1, 2]);
+    expect(fake.sidecarLoad).not.toHaveBeenCalled();
+    expect(fake.library.mock.calls.map(([, params]) => params.variant)).toEqual(['v0', 'v1']);
+  });
   it('requires the complete frame capability and never silently falls back to print-only export', async () => {
     expect(hostWrites(['write_image', 'export_image'])).toBe(false);
     expect(hostWrites(['export_frame'])).toBe(true);

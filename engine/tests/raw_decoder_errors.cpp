@@ -39,7 +39,8 @@ struct ScratchDirectory {
 void check_rejected(const std::filesystem::path& path, const char* label) {
     using Decode = bool (*)(const std::filesystem::path&, spk::io::DecodedRaw&, std::string&);
     for(Decode decode : {static_cast<Decode>(&spk::io::decode_raw_compatible),
-                        static_cast<Decode>(&spk::io::decode_raw_headroom)}) {
+                        static_cast<Decode>(&spk::io::decode_raw_headroom),
+                        +[](const std::filesystem::path& p,spk::io::DecodedRaw& o,std::string& e){return spk::io::decode_raw_auto(p,nullptr,o,e);}}) {
     spk::io::DecodedRaw prior;
     prior.width = 7;
     prior.height = 11;

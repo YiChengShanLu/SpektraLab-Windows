@@ -46,7 +46,10 @@ export interface Platform {
   appPaths(): Promise<AppPaths>;
   pickFolder(title: string): Promise<string | null>;
   pickFiles(title: string): Promise<string[]>;
+  pickDocument(title: string, extensions: string[]): Promise<string | null>;
   pickSave(title: string, defaultPath: string, ext: string): Promise<string | null>;
+  pickApplication(title: string): Promise<string | null>;
+  openExportedFiles(paths: string[], application: string): Promise<void>;
   reveal(path: string): Promise<void>;
   openUrl(url: string): Promise<void>;
   message(title: string, text: string, kind?: 'info' | 'warning' | 'error'): Promise<void>;

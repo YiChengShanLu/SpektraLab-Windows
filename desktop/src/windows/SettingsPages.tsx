@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { host } from '../host/client';
+import { host, type MemoryPolicy, type MemoryPolicyPatch } from '../host/client';
 import { inTauri } from '../host/transport';
 import { platform } from '../platform';
 import { tz } from '../i18n';
@@ -9,6 +9,61 @@ import { clearDisplayCache, configureDisplayCache, displayCacheStatus, type Disp
 import { checkWindowsUpdate, type UpdateStatus } from './updateCheck';
 
 const GiB = 1024 ** 3;
+
+function RuntimeMemorySettings() {
+  const [policy, setPolicy] = useState<MemoryPolicy | null>(null);
+  const [draft, setDraft] = useState<MemoryPolicyPatch | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const supported = typeof host().memoryPolicy === 'function';
+  useEffect(() => {
+    if (!supported) return;
+    let alive = true;
+    void host().memoryPolicy().then((value) => { if (alive) { setPolicy(value); setDraft(value); } })
+      .catch((e) => { if (alive) setError(String(e)); });
+    return () => { alive = false; };
+  }, [supported]);
+  if (!supported) return null;
+  const update = (patch: Partial<MemoryPolicyPatch>) => setDraft((value) => value ? { ...value, ...patch } : value);
+  const apply = async (clear = false) => {
+    setBusy(true); setError('');
+    try {
+      const patch = clear || !draft ? undefined : { reserve_mb: draft.reserve_mb, working_set_mb: draft.working_set_mb,
+        unlimited: draft.unlimited, allow_over_reserve: draft.allow_over_reserve, decode_cache_gib: draft.decode_cache_gib };
+      const value = await host().memoryPolicy(patch, clear); setPolicy(value); setDraft(value);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  };
+  return <div className="settings-group" data-testid="memory-policy">
+    <h3>{tz('Memory budget', '内存预算')}</h3>
+    {!draft ? <>
+      {!error && <p className="caption" role="status">{tz('Loading memory policy…', '正在读取内存预算…')}</p>}
+      {error && <button className="btn" onClick={() => void apply()} disabled={busy}>{tz('Retry', '重试')}</button>}
+    </> : <>
+      <label className="row">{tz('Reserve (MiB)', '预留（MiB）')} <input type="number" min={0} max={1048576} step={256}
+        aria-label={tz('Memory reserve', '内存预留')} value={draft.reserve_mb} disabled={busy}
+        onChange={(e) => update({ reserve_mb: Number(e.target.value) })} /></label>
+      <label className="row">{tz('Working-set cap (MiB)', '工作集上限（MiB）')} <input type="number" min={64} max={1048576} step={256}
+        aria-label={tz('Working-set cap', '工作集上限')} value={draft.working_set_mb} disabled={busy || draft.unlimited}
+        onChange={(e) => update({ working_set_mb: Number(e.target.value) })} /></label>
+      <ToggleRow label={tz('Unlimited working set', '不限制工作集')} on={draft.unlimited} disabled={busy} onChange={(unlimited) => update({ unlimited })} />
+      <ToggleRow label={tz('Allow exceeding the reserve', '允许超出预留')} on={draft.allow_over_reserve} disabled={busy}
+        onChange={(allow_over_reserve) => update({ allow_over_reserve })} />
+      <p className="caption">{tz('A projected decode/render peak outside this budget asks before continuing. This is a memory estimate, not a hard operating-system limit.', '预计解码和渲染峰值超出预算时会询问是否继续。这是内存估算，不是操作系统的强制限额。')}</p>
+      <h3>{tz('RAW decode cache', 'RAW 解码缓存')}</h3>
+      <label className="row">{tz('Limit (GiB; 0 disables)', '上限（GiB；0 关闭）')} <input type="number" min={0} max={64} step={1}
+        aria-label={tz('RAW cache limit', 'RAW 缓存上限')} value={draft.decode_cache_gib} disabled={busy}
+        onChange={(e) => update({ decode_cache_gib: Number(e.target.value) })} /></label>
+      {policy && <p className="caption" data-testid="raw-cache-status">{formatBytes(policy.decode_cache_bytes)} · {policy.decode_cache_entries} {tz('decodes', '份解码')} · {tz('hits', '命中')} {policy.decode_cache_hits}</p>}
+      <p className="caption">{tz('Reuses lossless decoded RAW pixels and camera metadata across restarts. Source content, white balance, lens settings and engine version are checked; invalid entries are decoded again.', '跨启动复用无损 RAW 解码像素和相机元数据；检查源文件内容、白平衡、镜头设置及引擎版本，缓存无效时重新解码。')}</p>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn" disabled={busy} onClick={() => void apply()}>{tz('Apply budget and RAW cache', '应用预算与 RAW 缓存')}</button>
+        <button className="btn" disabled={busy} onClick={() => void apply(true)}>{tz('Clear RAW cache', '清空 RAW 缓存')}</button>
+      </div>
+    </>}
+    {error && <p className="caption" role="alert">{error}</p>}
+  </div>;
+}
 export function formatBytes(value: unknown): string {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—';
   return value >= GiB ? `${(value / GiB).toFixed(2)} GiB` : `${(value / 1024 ** 2).toFixed(1)} MiB`;
@@ -59,6 +114,7 @@ export function MemorySettings() {
     finally { setBusy(false); }
   };
   return <>
+    <RuntimeMemorySettings />
     <div className="settings-group">
       <h3>{tz('Engine allocations', '引擎分配')}</h3>
       <dl className="caption" data-testid="memory-ledger">

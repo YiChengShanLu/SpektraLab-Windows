@@ -10,6 +10,7 @@ pub mod frame_cache;
 pub mod agent_files;
 pub mod workspace;
 pub mod diagnostics;
+pub mod library_host;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -23,12 +24,25 @@ use host::HostManager;
 
 struct AppState {
     host: Arc<HostManager>,
+    library: Arc<library_host::LibraryHost>,
     sidecars: files::SidecarStore,
     /// Paths from the command line (open-with) not yet taken by the webview.
     launch_paths: Mutex<Vec<String>>,
     frames: Arc<frame_cache::FrameCache>,
     cache_fingerprint: Arc<Mutex<Option<String>>>,
     workspace: Arc<workspace::Workspace>,
+}
+
+#[tauri::command]
+async fn library_request(state:State<'_,AppState>,method:String,params:Value)->Result<Value,Value>{
+    let _lease=state.workspace.enter().map_err(|e|json!({"code":"in_use","message":e}))?;
+    state.library.request(&method,params).await
+}
+
+#[tauri::command]
+async fn library_recycle_trash(state:State<'_,AppState>,library:String)->Result<Value,Value>{
+    let _lease=state.workspace.enter().map_err(|e|json!({"code":"in_use","message":e}))?;
+    state.library.recycle_trash(&library).await
 }
 
 fn reply_bytes(reply: host::Reply) -> Response {
@@ -256,6 +270,34 @@ fn ensure_dir(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_exported_files(paths: Vec<String>, application: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if paths.is_empty() { return Ok(()); }
+        for path in &paths {
+            let p = PathBuf::from(path);
+            if !p.is_absolute() || !p.is_file() || !matches!(p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+                Some("jpg" | "jpeg" | "png" | "tif" | "tiff")) {
+                return Err(format!("Not an exported image: {path}"));
+            }
+        }
+        if application.is_empty() {
+            for path in paths { tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())?; }
+        } else {
+            let app = PathBuf::from(&application);
+            if !app.is_absolute() || !app.is_file() { return Err(format!("Application is unavailable: {application}")); }
+            let mut command = std::process::Command::new(app);
+            command.args(paths);
+            #[cfg(windows)] {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
+            command.spawn().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn take_launch_paths(state: State<'_, AppState>) -> Vec<String> {
     std::mem::take(&mut *state.launch_paths.lock().unwrap())
 }
@@ -314,6 +356,7 @@ pub fn run() {
             let argv: Vec<String> = std::env::args().collect();
             app.manage(AppState {
                 host: Arc::clone(&host),
+                library: Arc::new(library_host::LibraryHost::new(library_host::program(),app.path().app_data_dir()?.join("Libraries"))),
                 sidecars: files::SidecarStore { dir: sidecar_dir },
                 launch_paths: Mutex::new(file_args(&argv)),
                 frames: Arc::new(frame_cache::FrameCache { dir: app.path().app_cache_dir()?.join("Frames-v1") }),
@@ -329,12 +372,16 @@ pub fn run() {
                 if window.label() == "main" {
                     let host = Arc::clone(&window.state::<AppState>().host);
                     tauri::async_runtime::block_on(async move { host.shutdown().await });
+                    let library=Arc::clone(&window.state::<AppState>().library);
+                    tauri::async_runtime::block_on(async move {library.shutdown().await});
                     diagnostics::clean_exit(window.app_handle());
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
             host_request,
+            library_request,
+            library_recycle_trash,
             host_request_upload,
             host_state,
             host_diagnostics,
@@ -373,6 +420,7 @@ pub fn run() {
             take_launch_paths,
             path_exists,
             ensure_dir,
+            open_exported_files,
             app_paths,
         ])
         .run(tauri::generate_context!())

@@ -93,12 +93,13 @@ export function isRawPath(path: string): boolean {
 export interface WireDecode {
   white_balance: { mode: 'as_shot' } | { mode: 'custom'; temperature_k: number; tint: number };
   lens_correction?: boolean;
+  raw_mode?: 'auto' | 'compatible16' | 'headroom';
 }
 
 /** `open.decode` / `redecode.decode` for a RAW; null for anything else (the host refuses it there). */
 export function decodeWire(d: DecodeSettings, isRaw: boolean): WireDecode | null {
   if (!isRaw) return null;
-  const lens = d.lensCorrection ? { lens_correction: true } : {};
+  const lens = { ...(d.lensCorrection ? { lens_correction: true } : {}), ...(d.rawMode ? { raw_mode: d.rawMode } : {}) };
   if (modeOf(d) === 'As Shot') return { white_balance: { mode: 'as_shot' }, ...lens };
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
   return { white_balance: { mode: 'custom', temperature_k: clamp(d.temperature, 2000, 50000), tint: clamp(d.tint, -150, 150) }, ...lens };

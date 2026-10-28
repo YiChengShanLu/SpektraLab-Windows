@@ -3,10 +3,50 @@
 import argparse
 from pathlib import Path
 import shutil
+import struct
 import tempfile
 
-from host_smoke import Host, write_png
+from host_smoke import Host, write_png, write_tiff16, write_dng_without_preview
+from array import array
 from host_proof import good
+
+
+def saturated_bayer(path):
+    """Neutral ramp exceeds a sensor channel's ceiling before RAW white balance."""
+    w, h = 256, 96
+    write_dng_without_preview(path, w, h)
+    data = bytearray(path.read_bytes())
+    tags = {}
+    for i in range(struct.unpack_from('<H', data, 8)[0]):
+        tag, kind, count, value = struct.unpack_from('<HHII', data, 10 + i * 12)
+        tags[tag] = value
+    # The green sensor channel saturates first; blindly preserving the other
+    # channels produces a false colour on this neutral subject.
+    struct.pack_into('<IIIIII', data, tags[50728], 1, 2, 1, 1, 2, 3)
+    for y in range(h):
+        for x in range(w):
+            channel = ((0, 1), (1, 2))[y % 2][x % 2]
+            neutral = (0.2 + 2.3 * x / (w - 1)) * 65535
+            sample = round(min(65535, neutral / (2, 1, 1.5)[channel]))
+            struct.pack_into('<H', data, tags[273] + (y * w + x) * 2, sample)
+    path.write_bytes(data)
+
+
+def highlight_blend(host, folder):
+    raw = folder / 'saturated-neutral.dng'
+    saturated_bayer(raw)
+    for mode in ('auto', 'headroom'):
+        opened, _ = good(host, 'open', {'path': str(raw), 'decode': {'raw_mode': mode}})
+        result, data = good(host, 'render_source', {'session': opened['session'], 'long_edge': 0,
+                                                   'display': 'srgb', 'format': 'rgba8'})
+        w, h = result['image']['width'], result['image']['height']
+        # Interior samples avoid demosaic/image borders. Fully blown neutral
+        # highlights must fade to white, not expose missing-channel colour.
+        for x in range(w * 3 // 4, w * 7 // 8):
+            at = ((h // 2) * w + x) * 4
+            rgb = data[at:at + 3]
+            assert min(rgb) >= 250 and max(rgb) - min(rgb) <= 3, (mode, x, list(rgb))
+        good(host, 'close', {'session': opened['session']})
 
 
 def source(host, sid, display="srgb", edge=512):
@@ -23,6 +63,36 @@ def source(host, sid, display="srgb", edge=512):
 def exercise(host, folder, raw):
     hello, _ = good(host, "hello")
     assert {"render_source", "pick_neutral"} <= set(hello["methods"])
+    assert 'rgba16' in hello['source_formats']
+    highlight_blend(host, folder)
+    # A linear DNG must fall back automatically; explicit headroom stays strict.
+    linear = folder / 'linear.dng'
+    write_dng_without_preview(linear, linear=True)
+    versions = []
+    for mode in ('compatible16', 'auto'):
+        opened, _ = good(host, 'open', {'path': str(linear), 'decode': {'raw_mode': mode}})
+        assert opened['raw_decode']['requested'] == mode and opened['raw_decode']['effective'] == 'compatible16'
+        versions.append(source(host, opened['session']))
+        good(host, 'close', {'session': opened['session']})
+    assert versions[0] == versions[1], 'automatic fallback changed compatible pixels'
+    failed, data = host.call('open', {'path': str(linear), 'decode': {'raw_mode': 'headroom'}})
+    assert not failed['ok'] and not data, 'explicit unsupported headroom was silently accepted'
+    ramp = folder / 'linear-ramp.tiff'
+    write_tiff16(ramp, 2048, 4)
+    opened, _ = good(host, 'open', {'path': str(ramp)})
+    for space in ('srgb', 'display-p3'):
+        versions = []
+        for fmt, stride in (('rgba8', 4), ('rgba16', 8)):
+            result, data = good(host, 'render_source', {'session': opened['session'], 'display': space, 'long_edge': 0, 'format': fmt, 'generation': 1})
+            assert result['image']['format'] == fmt and result['image']['row_bytes'] == 2048 * stride
+            assert len(data) == 2048 * 4 * stride
+            versions.append(data)
+        wide = array('H'); wide.frombytes(versions[1])
+        import sys
+        if sys.byteorder != 'little': wide.byteswap()
+        assert all(byte == (value * 255 + 32767) // 65535 for byte, value in zip(versions[0], wide)), 'source precision changed the colour transform'
+        assert len(set(wide[0::4])) > 256, '16-bit source was expanded from 8-bit pixels'
+    good(host, 'close', {'session': opened['session']})
     png = folder / "普通图像.png"
     write_png(str(png), 96, 64)
     opened, _ = good(host, "open", {"path": str(png)})

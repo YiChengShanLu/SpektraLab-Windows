@@ -48,6 +48,13 @@ export interface ProofReply extends RgbaImage {
   proof: RenderProofResult;
 }
 
+export interface MemoryPolicy {
+  reserve_mb: number; working_set_mb: number; unlimited: boolean; allow_over_reserve: boolean; decode_cache_gib: number;
+  process_bytes: number; available_bytes: number; decode_cache_bytes: number; decode_cache_entries: number;
+  decode_cache_hits: number; decode_cache_misses: number; decode_cache_path: string;
+}
+export type MemoryPolicyPatch = Pick<MemoryPolicy, 'reserve_mb' | 'working_set_mb' | 'unlimited' | 'allow_over_reserve' | 'decode_cache_gib'>;
+
 export function displayImage(info: ImageInfo, payload: Uint8Array): RgbaImage {
   if (!info || (info.format !== 'rgba8' && info.format !== 'rgba16'))
     throw new HostCallError('render', 'bad_request', 'unsupported display pixel format');
@@ -75,7 +82,15 @@ export class Host {
   }
 
   private async call<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number) {
-    const r = await this.transport.request(method, params, { timeoutMs });
+    let r;
+    try { r = await this.transport.request(method, params, { timeoutMs }); }
+    catch (error) {
+      if (!(error instanceof HostCallError) || error.code !== 'memory_budget' || params.memory_override) throw error;
+      const { platform } = await import('../platform');
+      const { tz } = await import('../i18n');
+      if (!await platform().confirm(tz('Memory budget', '内存预算'), `${error.message}\n\n${tz('Continue this operation once? You can change the budget in Settings > Memory.', '是否仅本次继续？可在“设置 → 内存”调整预算。')}`)) throw error;
+      r = await this.transport.request(method, { ...params, memory_override: true }, { timeoutMs });
+    }
     return { result: r.result as T, payload: r.payload };
   }
 
@@ -96,6 +111,9 @@ export class Host {
   }
   async memoryReport(): Promise<Record<string, unknown>> {
     return (await this.call<Record<string, unknown>>('memory_report', {}, 30_000)).result;
+  }
+  async memoryPolicy(patch?: MemoryPolicyPatch, clear = false): Promise<MemoryPolicy> {
+    return (await this.call<MemoryPolicy>('memory_policy', { ...(patch ? { patch } : {}), clear_decode_cache: clear }, 30_000)).result;
   }
 
   async hello(): Promise<HelloResult> {
@@ -126,10 +144,13 @@ export class Host {
     return (await this.call<OpenResult>('redecode', { session, decode }, 300_000)).result;
   }
   async renderSource(session: string, opts: { long_edge: number; display: 'srgb' | 'display-p3'; generation: number }): Promise<RgbaImage> {
-    const r = await this.call<{ image: ImageInfo; generation: number }>('render_source', { session, ...opts }, 180_000);
+    const state = await this.state();
+    const format = state.phase === 'ready' && state.hello.source_formats?.includes('rgba16') ? 'rgba16' : 'rgba8';
+    const stride = format === 'rgba16' ? 8 : 4;
+    const r = await this.call<{ image: ImageInfo; generation: number }>('render_source', { session, ...opts, format }, 180_000);
     const i = r.result.image;
     if (r.result.generation !== opts.generation || !i || i.width <= 0 || i.height <= 0 ||
-        i.row_bytes !== i.width * 4 || r.payload.byteLength !== i.width * i.height * 4)
+        i.format !== format || i.row_bytes !== i.width * stride || r.payload.byteLength !== i.width * i.height * stride)
       throw new HostCallError('render_source', 'internal', 'invalid or outdated decoded source response');
     return displayImage(i, r.payload);
   }
@@ -153,6 +174,13 @@ export class Host {
       tier === 'full' ? 900_000 : 180_000,
     );
     return { ...displayImage(r.result.image, r.payload), tier: r.result.tier ?? tier, reprinted: !!r.result.reprinted, ms: performance.now() - t0 };
+  }
+  async previewStock(session: string, printStock: string, display: 'srgb' | 'display-p3', rgba16 = false): Promise<RenderReply> {
+    const started = performance.now();
+    const r = await this.call<{ image: ImageInfo }>('preview_stock_lut', {
+      session, print_stock: printStock, tier: 'live', display, format: rgba16 ? 'rgba16' : 'rgba8',
+    }, 60_000);
+    return { ...displayImage(r.result.image, r.payload), tier: 'live', reprinted: true, ms: performance.now() - started };
   }
   async sceneLatitude(session: string, request: Record<string, unknown>, snapshot?: { params?: WireParams; source_geometry?: Geometry }): Promise<Record<string, unknown>> {
     return (await this.call<Record<string, unknown>>('scene_latitude', { session, request, ...snapshot })).result;

@@ -49,6 +49,12 @@ for (const renderDelay of [0, 600]) {
     const source = page.locator('.thumb[data-path="/mock/Roll 01/DSC_0002.NEF"]');
     await expect(source).toHaveAttribute('draggable', 'false');
     await expect(source.locator('canvas')).toBeVisible();
+    // Canvas presence precedes image.onload: its default 300×150 box then
+    // shrinks to the 104px thumbnail, which can put a neighbour under the
+    // pointer. Hover loads visible cells; wait for the actual image size and
+    // resolve the source again before starting the gesture.
+    await source.hover();
+    await expect.poll(() => source.locator('canvas').evaluate((canvas: HTMLCanvasElement) => canvas.height)).toBe(104);
     await source.hover(); await page.mouse.down();
     const empty = (await gate.boundingBox())!;
     await page.mouse.move(empty.x + empty.width / 2, empty.y + empty.height / 2, { steps: 8 });
@@ -67,6 +73,6 @@ for (const renderDelay of [0, 600]) {
     const after = await state(page, 's.pair.right.placement');
     expect(after.x).not.toBe(before.x); expect(after.y).not.toBe(before.y);
     await page.keyboard.press('Control+z');
-    expect(await state(page, 's.pair.right.placement')).toEqual(before);
+    await expect.poll(() => state(page, 's.pair.right.placement')).toEqual(before);
   });
 }

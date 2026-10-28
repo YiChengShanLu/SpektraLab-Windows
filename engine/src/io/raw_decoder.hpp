@@ -112,8 +112,10 @@ bool decode_raw_compatible(const std::filesystem::path& source, const std::array
                            DecodedRaw& out, std::string& error);
 
 // Experimental expanded-output policy for conventional three-colour Bayer
-// RAW only. As-shot WB is normalised by its largest multiplier (highlight=1)
-// before uint16 AHD demosaicing. LibRaw's actual ProPhoto matrix is evaluated
+// RAW only. As-shot WB is normalised by its largest multiplier (highlight=2)
+// before uint16 AHD demosaicing. LibRaw blends saturated highlight chroma
+// before conversion; it does not reconstruct lost sensor detail.
+// LibRaw's actual ProPhoto matrix is evaluated
 // without output clipping, then exposure is restored by 1/min(applied WB).
 // This is not an all-float RAW decoder. AHD can change with scaling, so even
 // non-clipped pixels need not equal the compatibility policy byte for byte.
@@ -127,5 +129,10 @@ bool decode_raw_headroom(const std::filesystem::path& source,
 // restoration uses that actual selected WB, not the camera's as-shot value.
 bool decode_raw_headroom(const std::filesystem::path& source, const std::array<float, 4>* user_mul,
                          DecodedRaw& out, std::string& error);
+
+// Prefer expanded linear output; fall back only for explicitly unsupported
+// sensor/layout cases. Corrupt data and processing failures are never hidden.
+bool decode_raw_auto(const std::filesystem::path& source, const std::array<float, 4>* user_mul,
+                     DecodedRaw& out, std::string& error);
 
 }  // namespace spk::io

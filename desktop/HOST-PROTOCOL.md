@@ -20,7 +20,7 @@ additive** (new methods, new optional fields). A breaking change bumps
 
 ## 1. Transport
 
-`spektralab-host --resources <engine-resources-dir> [--device <index>] [--log-level info]`
+`spektralab-host --resources <engine-resources-dir> [--device <index>] [--log-level info] [--decode-cache <directory>]`
 
 stdin/stdout carry binary frames; stderr is a free-form log (one line per entry).
 
@@ -43,7 +43,7 @@ Requests are processed **in order on one worker thread**, except `cancel`,
 A response may carry a binary payload (pixels, encoded thumbnail).
 
 Error codes: `bad_request`, `not_found`, `decode_failed`, `engine_error`,
-`unsupported`, `cancelled`, `io_error`, `internal`.
+`unsupported`, `cancelled`, `io_error`, `memory_budget`, `internal`.
 
 ## 2. Pixel payloads
 
@@ -86,6 +86,20 @@ P3 and the browser manages the monitor. It is not export gamut soft-proofing.
 | `params_schema` | `{}` | `<spk_params_schema JSON>` |
 | `print_lut_catalog` | `{}` | `<spk_print_lut_catalog JSON>` |
 | `memory_report` | `{}` | `<spk_memory_report JSON>` |
+| `memory_policy` | `{patch?: {reserve_mb?, working_set_mb?, unlimited?, allow_over_reserve?, decode_cache_gib?}, clear_decode_cache?: boolean}` | Policy plus process/available bytes, decoded-cache path/bytes/entries/hits/misses. Integer MiB budgets, working set >=64 MiB, cache 0–64 GiB. |
+
+With `--decode-cache`, the host persists this policy and lossless decoded RAW
+pixels/camera metadata there. A bounded versioned cache checks executable,
+source content/identity and decode options; CRC validates its payload. Broken
+entries fall back to decoding, and least-recently-used entries obey the quota.
+Zero disables/evicts decoded caches; it does not remove photographs or edits.
+`open.timings_ms.decode_cache_hit` identifies an actual reuse across processes.
+
+A projected decode/render peak can return `memory_budget` before allocating
+the image. The desktop asks before retrying the same request with
+`memory_override: true`. That flag applies only to that request; enabling
+`allow_over_reserve` bypasses the reserve warning, while `unlimited` bypasses
+the working-set estimate. These are soft preflight budgets, not OS limits.
 
 The Windows/Linux engine also reports `suspended_bytes` for exact image-cache
 bytes held in temporary disk storage. This is **not** resident GPU memory and
@@ -123,10 +137,10 @@ What a file is decoded *to* (the engine develops linear ProPhoto RGB, top row fi
 ### Sessions (one per open frame)
 | method | params | result |
 |---|---|---|
-| `open` | `{path, decode?: {raw_mode?: "compatible16"\|"headroom", white_balance?: {mode: "as_shot"\|"custom", temperature_k?, tint?}, lens_correction?: boolean}, params?: <full or partial params JSON>}` | `{session: "<sid>", width, height, kind, metadata, params, detected_input, output_color_space, timings_ms: {decode, open}}` — any other `decode` key is `unsupported` |
+| `open` | `{path, decode?: {raw_mode?: "compatible16"\|"headroom"\|"auto", white_balance?: {mode: "as_shot"\|"custom", temperature_k?, tint?}, lens_correction?: boolean}, params?: <full or partial params JSON>}` | `{session: "<sid>", width, height, kind, metadata, params, detected_input, output_color_space, raw_decode?, timings_ms: {decode, open}}` — any other `decode` key is `unsupported` |
 | `redecode` | `{session, decode}` | as `open` (same `session` id, params kept): decode the session's file again with other decode settings. The engine session is replaced; on failure the old one is untouched (R2) |
 | `close` | `{session}` | `{}` |
-| `render_source` | `{session,display:"srgb"\|"display-p3",long_edge?,generation?}` | `{image,generation,source:"decoded"}` + RGBA8 of the current decoded source; film/grade edits do not affect it |
+| `render_source` | `{session,display:"srgb"\|"display-p3",format?:"rgba8"\|"rgba16",long_edge?,generation?}` | `{image,generation,source:"decoded"}` + current decoded source; film/grade edits do not affect it. Default RGBA8; negotiate RGBA16 through `hello.source_formats` independently of `view_formats`. |
 | `pick_neutral` | `{session,x,y,side?:"left"\|"right"}` | `{temperature_k,tint}` from calibrated RAW source, normalized whole-source coordinates and 5×5 patch. Pair requires `side`, rejects gap/edge/other-hole samples, removes that hole's exposure gain, and retains calibration on cache hits. Non-RAW is unsupported. |
 | `set_params` | `{session, delta: {...}}` | `{params}` (the delta is applied transactionally: on error the session is unchanged) |
 | `get_params` | `{session}` | `{params}` |
@@ -189,8 +203,26 @@ interpolation in float. Where `drawingBufferStorage` and
 float16; otherwise it falls back to RGBA8 without prematurely rounding the
 source texture. This is not HDR, nor a claim that a monitor outputs 10 bits.
 Navigation/histogram/thumbnail targets remain small RGBA8 images; source and
-export-proof transports currently remain RGBA8. The print/export computations
+export-proof transports have separate contracts. `hello.source_formats` independently
+advertises `render_source` RGBA8/RGBA16; the desktop requests RGBA16 for the decoded
+original and comparison view only when that capability is present. An old host
+advertising only `view_formats` still receives RGBA8 source requests. Export proof
+remains RGBA8. The print/export computations
 and exported bit depth are unaffected by the display buffer choice.
+
+`decode.raw_mode:"auto"` tries the expanded linear RGB conversion and falls back to
+`compatible16` only for an unsupported sensor layout/source type. Corrupt input,
+white-balance, allocation and processing errors remain errors. Explicit `headroom`
+remains strict; omitted `raw_mode` retains the legacy `compatible16` host default.
+`open`/`redecode` return `raw_decode:{requested,effective,linear_output}` for RAW;
+`effective` identifies the actual `headroom` or `compatible16` decoder. Expanded
+output preserves negative and above-one values at the camera-to-ProPhoto conversion,
+after uint16 AHD demosaic. LibRaw highlight blending (`highlight=2`) removes
+missing-channel chroma from saturated highlights before this conversion, avoiding
+false magenta whites. It is not float demosaic or saturated-sensor detail recovery.
+The desktop selects `auto` for new photographs and Mac sidecars; existing Windows
+LibRaw sidecars without a policy retain `compatible16`. The policy is saved,
+undoable and carried by paired-frame decode settings and export snapshots.
 
 `hello.export_spaces` advertises the supported recipe wire names: `sRGB`,
 `display-p3`, `prophoto`, `adobe-rgb`, `rec2020`. The latter two are Adobe RGB
@@ -344,6 +376,14 @@ disk snapshot. Cancellation and failed private exports retain the editor.
 Temporary files use delete-on-close lifetime on Windows. This lowers peak
 residency at the cost of disk I/O and one restoration when returning to editing;
 it does not add concurrent RAW decoding, GPU rendering or CPU encoding.
+After each private export/proof source is released, its unused GPU buffers are
+trimmed immediately, including failure/cancellation cleanup. Resident editor
+sources and cached results remain owned by their session; cleanup does not
+re-render or change grain. Same-session editor rendering keeps its reusable pool.
+Private export/proof decodes read existing RAW cache entries but do not populate
+new ones. A one-pass batch therefore cannot evict editor entries by writing a
+full float source per photograph. Explicit editor open/redecode still populate
+the cache, with source/options validation unchanged.
 
 Events: `{"event": "progress", "session", "progress_id", "fraction", "stage"}`
 (stages `render`, `transform`/`encode`, `done`; emitted only for requests that

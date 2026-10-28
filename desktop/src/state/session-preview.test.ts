@@ -7,6 +7,7 @@ import { newSidecar } from '@shared/sidecar';
 const fake = vi.hoisted(() => ({
   setParams: vi.fn(async () => ({})), renderView: vi.fn(), render: vi.fn(),
   open: vi.fn(), close: vi.fn(async () => {}), thumbnail: vi.fn(), logs: [] as string[],
+  previewStock: vi.fn(),
   frames: { print: null as RenderReply | null, original: null },
 }));
 vi.mock('../host/client', () => ({ HostCallError: class extends Error {}, host: () => fake }));
@@ -36,6 +37,21 @@ beforeEach(async () => {
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('processed preview scheduling', () => {
+  it('publishes the temporary stock LUT before the final reprint without saving it as a completed frame', async () => {
+    await session.requestPrint();
+    fake.previewStock.mockResolvedValue(frame(35));
+    let finish!: (reply: RenderReply) => void;
+    fake.renderView.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    session.sessionStore.setState({ hello: { methods: ['render_view', 'preview_stock_lut'] } as HelloResult });
+    session.setParams((p) => ({ ...p, printStock: 'another-paper' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.previewStock).toHaveBeenCalledWith('s1', 'another-paper', 'srgb', false);
+    expect(fake.frames.print?.data[0]).toBe(35);
+    expect(session.sessionStore.getState().badge).toBe('preview');
+    finish(frame(215));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.frames.print?.data[0]).toBe(215);
+  });
   it('a grade edit requests a cached view without resending film parameters', async () => {
     await session.requestPrint();
     fake.setParams.mockClear();
@@ -174,6 +190,7 @@ describe('processed preview scheduling', () => {
     session.sessionStore.setState({ selection: null, engineSession: null,
       hostState: { phase: 'ready', hello: { methods: ['render_view'] } as HelloResult } });
     await session.select('/owned/new.ARW');
+    await session.requestPrint();
     await vi.advanceTimersByTimeAsync(0);
     const open = fake.logs.find((message) => message.startsWith('session: open '));
     expect(open).toContain('"raw":{"open":1,"unpack":2,"process":3,"convert":4,"total":10,"openmp_enabled":true,"workers":8}');

@@ -131,8 +131,8 @@ def tiff_info(path):
     return tags
 
 
-def write_dng_without_preview(path, w=128, h=96):
-    """Small valid uncompressed Bayer DNG; only the raw IFD, no preview IFD."""
+def write_dng_without_preview(path, w=128, h=96, linear=False):
+    """Small valid uncompressed Bayer/linear DNG; raw IFD, no preview IFD."""
     tags = {}
     def tag(number, kind, count, value):
         tags[number] = (kind, count, value)
@@ -141,11 +141,14 @@ def write_dng_without_preview(path, w=128, h=96):
     def long(number, *values):
         tag(number, 4, len(values), struct.pack("<" + "I" * len(values), *values))
     long(254, 0); long(256, w); long(257, h)
-    short(258, 16); short(259, 1); short(262, 32803)
-    long(273, 0); short(277, 1); long(278, h); long(279, w * h * 2)
-    short(33421, 2, 2); tag(33422, 1, 4, bytes([0, 1, 1, 2]))
+    channels = 3 if linear else 1
+    short(258, *([16] * channels)); short(259, 1); short(262, 34892 if linear else 32803)
+    long(273, 0); short(277, channels); long(278, h); long(279, w * h * 2 * channels)
+    if not linear:
+        short(33421, 2, 2); tag(33422, 1, 4, bytes([0, 1, 1, 2]))
     tag(50706, 1, 4, bytes([1, 4, 0, 0])); tag(50707, 1, 4, bytes([1, 1, 0, 0]))
-    model = b"SpektraLab test Bayer\0"; tag(50708, 2, len(model), model)
+    model = b"SpektraLab test linear\0" if linear else b"SpektraLab test Bayer\0"
+    tag(50708, 2, len(model), model)
     short(50711, 1); long(50714, 0); long(50717, 65535)
     long(50719, 0, 0); long(50720, w, h)
     tag(50721, 10, 9, b"".join(struct.pack("<ii", 1 if i % 4 == 0 else 0, 1) for i in range(9)))
@@ -162,7 +165,7 @@ def write_dng_without_preview(path, w=128, h=96):
         entries.append((number, struct.pack("<HHI", number, kind, count) + field))
     pixels_at = extra_at + len(extra)
     entries = [struct.pack("<HHII", 273, 4, 1, pixels_at) if number == 273 else entry for number, entry in entries]
-    pixels = b"".join(struct.pack("<H", 8000 + 32 * x + 16 * y) for y in range(h) for x in range(w))
+    pixels = b"".join(struct.pack("<H", 8000 + 32 * x + 16 * y + 200 * c) for y in range(h) for x in range(w) for c in range(channels))
     with open(path, "wb") as f:
         f.write(b"II*\0" + struct.pack("<IH", 8, len(tags)) + b"".join(entries) + struct.pack("<I", 0) + extra + pixels)
 

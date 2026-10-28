@@ -100,9 +100,9 @@ struct PoolAudit {
     uint64_t persistent_allocations = 0;
     // The size relationship on a reuse, for pinning the policy as it is
     // rather than as someone might prefer it. `reuse_taken` is the buffer
-    // handed over and `reuse_requested` what was asked for; by design there is
-    // no upper bound, so a small request can take a full-frame plane when that
-    // is what the pool holds -- and `max_taken_for_request` names the request
+    // handed over and `reuse_requested` what was asked for. Metal permits any
+    // larger buffer; Vulkan bounds the excess to avoid pinning a full-frame
+    // plane for a small table. `max_taken_for_request` names the request
     // that took the largest one, so the ratio is a fact about an actual
     // hand-out rather than a statistic.
     uint64_t reuse_bytes_requested = 0;
@@ -287,6 +287,17 @@ public:
     // rather than silent: `pool_stats().file_backed_bytes` does not grow.
     virtual BufferRef alloc_file_backed(size_t bytes, std::string& error) = 0;
     virtual BufferRef upload_file_backed(const void* data, size_t bytes, std::string& error) = 0;
+
+    // Keep a completed intermediate beyond the frame. Shared-memory backends
+    // copy into file-backed storage; discrete backends may adopt its allocation.
+    virtual BufferRef make_persistent(BufferRef buffer, size_t bytes, std::string& error) {
+        if (!buffer || !bytes || bytes > size_bytes(buffer.get())) {
+            error = "invalid persistent buffer range"; return {};
+        }
+        auto kept = alloc_file_backed(bytes, error);
+        if (!kept || !copy(kept.get(), 0, buffer.get(), 0, bytes, error)) return {};
+        return kept;
+    }
 
     // A caller's `id<MTLBuffer>`, wrapped without a copy. Retained while a
     // handle exists and released -- never pooled -- when the last one drops,

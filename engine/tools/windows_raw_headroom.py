@@ -1,6 +1,6 @@
 """Independent integration gate for the opt-in native RAW headroom policy.
 
-The oracle uses rawpy's oriented uint16 camera RGB with highlight=1, then a
+The oracle uses rawpy's oriented uint16 camera RGB with highlight=2, then a
 NumPy float64 matrix expression. A second rawpy decode to ProPhoto verifies
 the reported matrix against LibRaw's own conversion, including clipping.
 This checks the post-demosaic float seam, not an all-float RAW pipeline or
@@ -109,7 +109,7 @@ def prophoto_oracle(actual: np.ndarray, reference: np.ndarray, restore: float) -
             item["maximum_count_error"] = max(item["maximum_count_error"], int(band.max(initial=0)))
             item["over_two_counts"] += int(np.count_nonzero(band > 2))
     return {"passed": groups["all"]["over_two_counts"] == 0, "maximum_allowed_count_error": 2,
-            "reference": "independent rawpy ProPhoto RGB16 with highlight=1",
+            "reference": "independent rawpy ProPhoto RGB16 with highlight=2",
             "reconstruction": "floor(clip(native_float * 65535 / exposure_restore, 0, 65535))",
             "groups": groups}
 
@@ -201,7 +201,7 @@ def main() -> None:
                                      "native_libraw": native["decode"]["libraw_version"],
                                      "rawpy_path": str(args.rawpy_path), "numpy": np.__version__}
         requested = decoder_parameters(rawpy)
-        requested["highlight_mode"] = rawpy.HighlightMode.Ignore
+        requested["highlight_mode"] = rawpy.HighlightMode.Blend
         started = time.perf_counter()
         with rawpy.imread(str(args.input)) as raw:
             camera = raw.postprocess(**{**requested, "output_color": rawpy.ColorSpace.raw})

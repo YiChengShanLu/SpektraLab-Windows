@@ -11,6 +11,9 @@ export interface DisplayCacheDescriptor {
   sources: string[];
   configuration: unknown;
 }
+/** Shared by import prebuilding, source display and small camera thumbnails. */
+export const cameraDescriptor = (path: string): DisplayCacheDescriptor => ({ kind: 'original', sources: [path],
+  configuration: { version: 1, embeddedCameraPreview: true, longEdge: 2048, display: 'srgb', format: 'rgba8' } });
 export interface DisplayCacheStatus {
   cap_bytes: number; bytes: number; entries: number; max_entry_bytes: number; path: string;
 }

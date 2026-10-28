@@ -8,7 +8,7 @@
 // whatever tier is on the canvas (§7.3: zoom selects no tier).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { openDialog, openFilesDialog } from '../windows/actions';
+import { openFolderDialog, openFilesDialog } from '../windows/actions';
 import {
   type Geometry,
   type Point,
@@ -35,6 +35,7 @@ import { GLRenderer, type DrawState } from './glRenderer';
 import { frameImages } from '../state/frames';
 import {
   beginGesture,
+  endGesture,
   choosePairHole,
   click,
   commitPairPlacement,
@@ -129,6 +130,7 @@ export function Canvas() {
   const comparePosition = useSession((s) => s.comparePosition);
   const showingOriginal = useSession((s) => s.showingOriginal);
   const badge = useSession((s) => s.badge);
+  const unprocessed = useSession((s) => s.sidecar.state === 'unprocessed' && !s.developing);
   const selection = useSession((s) => s.selection);
   const batch = useSession((s) => s.batchExporting);
   const exportOpen = useSession((s) => s.exportOpen);
@@ -375,7 +377,7 @@ export function Canvas() {
       else {
         const hole = pair[hit], info = pairInfo?.[hit];
         if (pairPlacing && pairLayer === hit && hole && info?.available) {
-          beginGesture(); drag.current = { kind: 'pair', start: point!, side: hit, placement: hole.placement, source: outputSize(hole.geometry, info), rect: pairGates[hit] }; return;
+          beginGesture(true); drag.current = { kind: 'pair', start: point!, side: hit, placement: hole.placement, source: outputSize(hole.geometry, info), rect: pairGates[hit] }; return;
         }
         setPairLayer(hit);
         if (!hole) { void choosePairHole(hit); return; }
@@ -414,7 +416,7 @@ export function Canvas() {
     if (d.kind === 'pair') {
       const point = toSource(e.clientX, e.clientY);
       if (point && pair) setPairPlacement(d.side, () => draggedPlacement(d.placement,
-        { x: (point.x - d.start.x) / d.rect.width, y: (point.y - d.start.y) / d.rect.height }, d.source, pairAspect(pair)));
+        { x: (point.x - d.start.x) / d.rect.width, y: (point.y - d.start.y) / d.rect.height }, d.source, pairAspect(pair)), true, true);
     } else if (d.kind === 'pan') {
       const dx = ((e.clientX - d.x) * size.dpr) / layout.outSize.width;
       const dy = ((e.clientY - d.y) * size.dpr) / layout.outSize.height;
@@ -453,6 +455,7 @@ export function Canvas() {
     }
     drag.current = null;
     setStraightenLine(null);
+    endGesture();
   };
 
   const onWheel = (e: React.WheelEvent) => {
@@ -510,7 +513,8 @@ export function Canvas() {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={() => { drag.current = null; setStraightenLine(null); }}
+      onPointerCancel={() => { drag.current = null; setStraightenLine(null); endGesture(); }}
+      onLostPointerCapture={() => { drag.current = null; setStraightenLine(null); endGesture(); }}
       onWheel={onWheel}
       onContextMenu={(e) => {
         if (!pair || !pairGates || batch) return;
@@ -543,11 +547,11 @@ export function Canvas() {
       {!selection && !glError && <div className="canvas-message canvas-empty" data-testid="canvas-empty">
         <div className="canvas-empty-actions" onPointerDown={(e) => e.stopPropagation()}
           onKeyDown={(e) => { if (e.code === 'Space') e.stopPropagation(); }}>
-          <button className="btn primary" disabled={batch} onClick={() => void openDialog()} title="Ctrl+O">
-            {tz('Open folder…', '打开文件夹…')}
+          <button className="btn primary" disabled={batch} onClick={() => void openFilesDialog()} title="Ctrl+O">
+            {tz('Open photographs…', '打开照片…')}
           </button>
-          <button className="btn" disabled={batch} onClick={() => void openFilesDialog()} title="Ctrl+Shift+O">
-            {tz('Open photographs…', '打开图片…')}
+          <button className="btn" disabled={batch} onClick={() => void openFolderDialog()} title="Ctrl+Shift+O">
+            {tz('Open folder…', '打开文件夹…')}
           </button>
         </div>
         <span>{tz('You can also drag photographs or a folder here.', '也可以将图片或文件夹拖到这里。')}</span>
@@ -575,7 +579,7 @@ export function Canvas() {
             `当前显示最多 ${maxTextureSize} 像素；导出仍使用所选分辨率。`)}
         </span>}
         {originalFallback && selection && <span className="tier-badge preview" data-testid="camera-preview-badge">
-          {tz('Camera preview · loading film effect', '原图预览 · 正在加载胶片效果')}
+          {unprocessed ? tz('Original · choose Solve or edit to develop', '原图 · 点击配光或修改参数后显影') : tz('Camera preview · loading film effect', '原图预览 · 正在加载胶片效果')}
         </span>}
         {!originalFallback && badge && selection && (
           <span className={'tier-badge ' + badge} data-testid="tier-badge" title={badge === 'full' ? tz('Rendered from the full-resolution source; display detail follows zoom', '已完成原尺寸渲染；显示精细度随缩放调整') : tz('Preview resolution — the frame’s own is on its way', '预览分辨率——全尺寸正在渲染')}>

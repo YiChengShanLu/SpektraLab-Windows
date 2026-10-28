@@ -17,7 +17,7 @@ describe('photograph routing across picker, directory scan and native decoder', 
     const raw = isRawPath(`D:/照片/Camera.${ext}`);
     expect(raw).toBe(true);
     expect(decodeWire({ ...DECODE_DEFAULT, whiteBalance: 'Custom', temperature: 6200, tint: 8, lensCorrection: true }, raw))
-      .toEqual({ white_balance: { mode: 'custom', temperature_k: 6200, tint: 8 }, lens_correction: true });
+      .toEqual({ white_balance: { mode: 'custom', temperature_k: 6200, tint: 8 }, lens_correction: true, raw_mode: 'auto' });
   });
   it.each(RASTER_EXTENSIONS)('keeps %s out of the RAW decode settings route', (ext) => {
     expect(PHOTO_PICKER_EXTENSIONS).toContain(ext);

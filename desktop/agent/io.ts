@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 import { Refused } from './schema';
 export const here=dirname(fileURLToPath(import.meta.url));
 export const appExe=process.env.SPEKTRALAB_AGENT_APP??[join(here,'..',process.platform==='win32'?'spektralab.exe':'spektralab'),
@@ -37,7 +38,8 @@ export class NativeHost extends Child {
     const executable=process.env.SPEKTRALAB_AGENT_HOST??join(dir,process.platform==='win32'?'spektralab-host.exe':'spektralab-host');
     const resources=process.env.SPEKTRALAB_AGENT_RESOURCES??[join(dir,'engine'),join(dir,'host','engine'),join(here,'..','host','engine')].find(p=>existsSync(p));
     if(!resources)throw new Error('Engine resources are missing. Reinstall the complete application.');
-    super(executable,['--resources',resources]);
+    const data = process.platform === 'win32' ? process.env.APPDATA : (process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'));
+    super(executable,['--resources',resources,...(data ? ['--decode-cache',join(data,'app.spektralab.desktop','DecodeCache-v1')] : [])]);
     this.process.stdout.on('data',(b:Buffer)=>{
       this.buffered=Buffer.concat([this.buffered,b]);
       while(this.buffered.length>=8){const h=this.buffered.readUInt32LE(0),p=this.buffered.readUInt32LE(4);

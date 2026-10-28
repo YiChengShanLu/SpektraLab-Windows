@@ -133,6 +133,93 @@ bool check_compute_transfers(Gpu* gpu, std::string& error) {
     return true;
 }
 
+bool check_pool_size_classes(Gpu* gpu, std::string& error) {
+    gpu->trim_pool(0);
+    constexpr size_t large_bytes = 8 * 1024 * 1024;
+    auto large = gpu->alloc(large_bytes, error);
+    if (!large) return false;
+    auto* address = large.get();
+    large.reset();
+    auto small = gpu->alloc_zeroed(4096, error);
+    if (!small || !require(gpu->size_bytes(small.get()) <= 128 * 1024,
+        "tiny allocation pinned a frame-sized pooled buffer", error)) return false;
+    large = gpu->alloc(large_bytes, error);
+    if (!large || !require(large.get() == address,
+        "small allocation displaced the reusable frame buffer", error)) return false;
+    std::vector<uint32_t> values;
+    if (!read_test_buffer(gpu, small, values, error) ||
+        !require(std::all_of(values.begin(), values.end(), [](uint32_t v){return v==0;}),
+        "bounded reuse changed zero-fill contents", error)) return false;
+    return true;
+}
+
+bool check_pool_upscale(Gpu* gpu, std::string& error) {
+    gpu->trim_pool(0);
+    constexpr size_t mib = 1024 * 1024;
+    auto live = gpu->alloc_zeroed(3 * mib, error);
+    auto lut = gpu->alloc(4096, error);
+    auto preview = gpu->alloc(8 * mib, error);
+    auto other_preview = gpu->alloc(16 * mib, error);
+    auto full = gpu->alloc(64 * mib, error);
+    if (!live || !lut || !preview || !other_preview || !full) return false;
+    auto* full_address = full.get();
+    auto* lut_address = lut.get();
+    preview.reset(); other_preview.reset(); full.reset(); lut.reset();
+    auto larger = gpu->alloc(96 * mib, error);
+    if (!larger || !require(gpu->pool_stats().free_bytes == 64 * mib + 4096,
+        "full-frame pool miss retained incompatible preview planes", error)) return false;
+    full = gpu->alloc(64 * mib, error); lut = gpu->alloc(4096, error);
+    if (!full || !lut || !require(full.get() == full_address && lut.get() == lut_address,
+        "upscale discarded reusable full planes or small LUTs", error)) return false;
+    std::vector<uint32_t> got;
+    if (!read_test_buffer(gpu, live, got, error) ||
+        !require(std::all_of(got.begin(), got.end(), [](uint32_t v){return v == 0;}),
+        "upscale reclaimed a live preview plane", error)) return false;
+    return true;
+}
+
+bool check_persistent_adoption(Gpu* gpu, std::string& error) {
+    gpu->trim_pool(0);
+    const std::vector<uint32_t> expected = {0, 0x80000000u, 0x7fc12345u, 0xffffffffu};
+    const size_t bytes = expected.size() * sizeof(uint32_t);
+    auto buffer = gpu->upload(expected.data(), bytes, error);
+    if (!buffer) return false;
+    BufferRef alias = buffer;
+    const auto before = gpu->pool_stats();
+    auto kept = gpu->make_persistent(std::move(buffer), bytes, error);
+    const auto adopted = gpu->pool_stats();
+    if (!kept || !require(!buffer && kept.get() == alias.get() &&
+        adopted.total_bytes + bytes == before.total_bytes &&
+        adopted.persistent_bytes == before.persistent_bytes + bytes,
+        "cached intermediate was copied instead of adopted", error)) return false;
+    auto other = gpu->alloc_zeroed(bytes, error);
+    std::vector<uint32_t> got;
+    if (!other || !require(other.get() != kept.get(), "pool reused a persistent intermediate", error)) return false;
+    gpu->trim_pool(0);
+    if (!read_test_buffer(gpu, kept, got, error) || !require(got == expected,
+        "adoption or trim changed cached pixels", error)) return false;
+    kept.reset();
+    if (!read_test_buffer(gpu, alias, got, error) || !require(got == expected,
+        "adoption lost a retained alias", error)) return false;
+    alias.reset();
+    if (!require(gpu->pool_stats().persistent_bytes == before.persistent_bytes,
+        "adopted allocation survived its last reference", error)) return false;
+    std::string diagnostic;
+    if (!require(!gpu->make_persistent({}, bytes, diagnostic) && !diagnostic.empty(),
+        "empty persistent buffer accepted", error)) return false;
+    std::vector<uint32_t> larger = expected;larger.insert(larger.end(), expected.begin(), expected.end());
+    auto oversized = gpu->upload(larger.data(), larger.size() * 4, error);
+    auto exact = gpu->make_persistent(oversized, bytes, error);
+    if (!exact || !require(exact.get() != oversized.get() && gpu->size_bytes(exact.get()) == bytes,
+        "session retained oversized scratch storage", error) ||
+        !read_test_buffer(gpu, exact, got, error) || !require(got == expected,
+        "persistent fallback changed the requested range", error)) return false;
+    diagnostic.clear();
+    if (!require(!gpu->make_persistent(exact, bytes + 4, diagnostic) && !diagnostic.empty(),
+        "persistent buffer overrun accepted", error)) return false;
+    return true;
+}
+
 bool check_pool_lifetimes(Gpu* gpu, std::string& error) {
     if (!gpu->flush(error)) return false;
     gpu->trim_pool(0);
@@ -287,7 +374,8 @@ int main(int argc, char** argv) {
     if (!gpu) { std::fprintf(stderr, "Vulkan device: %s\n", error.c_str()); return 1; }
     std::printf("Vulkan device: %s\n", gpu->device_name().c_str());
     if (!check_ranges(gpu.get(), error) || !check_compute_transfers(gpu.get(), error) ||
-        !check_pool_lifetimes(gpu.get(), error)) {
+        !check_pool_lifetimes(gpu.get(), error) || !check_pool_size_classes(gpu.get(), error) ||
+        !check_pool_upscale(gpu.get(), error) || !check_persistent_adoption(gpu.get(), error)) {
         std::fprintf(stderr, "transfer: %s\n", error.c_str());
         return 1;
     }

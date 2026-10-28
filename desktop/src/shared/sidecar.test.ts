@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeSidecar, encodeSidecar, newSidecar } from './sidecar';
+import { decodeSidecar, encodeSidecar, isUntouched, newSidecar } from './sidecar';
 
 // A sidecar as the macOS app writes it (abridged, real key names).
 const mac = {
@@ -33,6 +33,25 @@ const mac = {
 };
 
 describe('sidecar', () => {
+  it('prefers expanded linear RAW for new/Mac photos and retains legacy Windows decodes', () => {
+    expect(newSidecar().decode.rawMode).toBe('auto');
+    expect(decodeSidecar({ decoder: 'coreimage', decode: {} }).decode.rawMode).toBe('auto');
+    expect(decodeSidecar({ decoder: 'libraw', decode: {} }).decode.rawMode).toBe('compatible16');
+    expect(decodeSidecar({ decoder: 'libraw', decode: { rawMode: 'headroom' } }).decode.rawMode).toBe('headroom');
+    expect(decodeSidecar({ decoder: 'libraw', decode: { rawMode: 'invalid' } }).decode.rawMode).toBe('compatible16');
+  });
+  it('distinguishes browsing with auto-filled camera values from an actual edit', () => {
+    const s = decodeSidecar(encodeSidecar(newSidecar()));
+    s.decode.temperature = 5409; s.decode.tint = 16;
+    s.params.filmFormatMM = 23.5;
+    s.params.filmEdge = { ...s.params.filmEdge, seeded: true, cameraSeed: 123, frameSeed: 456, frameNumber: 7, edgeText: 'SONY', fNumber: 2.8 };
+    s.params.dateBack = { ...s.params.dateBack, text: '2026-06-05', dataText: 'ISO 100' };
+    expect(isUntouched(s)).toBe(true);
+    expect(isUntouched({ ...s, state: 'processed' })).toBe(false);
+    expect(isUntouched({ ...s, adjustments: { ...s.adjustments, exposure: .1 } })).toBe(false);
+    expect(isUntouched({ ...s, decode: { ...s.decode, whiteBalance: 'Custom' } })).toBe(false);
+    expect(isUntouched({ ...s, raw: { _spkLibraryPair: {} } })).toBe(false);
+  });
   it('carries the revision of each editing snapshot independently through edits', () => {
     const oldToken = { key: 'D:/owned/a.json', base: 'a'.repeat(64) };
     const old = decodeSidecar({ ...mac, _spkRevision: oldToken });

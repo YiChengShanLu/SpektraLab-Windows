@@ -12,6 +12,15 @@ const response = (generation: number) => ({ result: { generation, tier: 'live', 
 const state = async () => ({ phase: 'ready', hello: { view_formats: ['rgba8'] } });
 
 describe('Host.renderView', () => {
+  it('negotiates source precision independently and preserves 16-bit P3 data', async () => {
+    const request = vi.fn(async () => ({ result: { generation: 12,
+      image: { width: 1, height: 1, format: 'rgba16', color_space: 'Display P3', row_bytes: 8 } }, payload: new Uint8Array([1, 2, 3, 4, 5, 6, 255, 255]) }));
+    const host = new Host({ request, state: async () => ({ phase: 'ready', hello: { source_formats: ['rgba16'] } }) } as unknown as Transport);
+    const original = await host.renderSource('s1', { long_edge: 100, display: 'display-p3', generation: 12 });
+    expect(original.format).toBe('rgba16');
+    expect(original.colorSpace).toBe('Display P3');
+    expect(request).toHaveBeenCalledWith('render_source', expect.objectContaining({ format: 'rgba16' }), expect.anything());
+  });
   it('sends display, generation, grade and geometry and preserves display metadata', async () => {
     const request = vi.fn().mockResolvedValue(response(12));
     const host = new Host({ request, state } as unknown as Transport);

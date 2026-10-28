@@ -8,10 +8,11 @@ import { BeforeAfter, Crop, Cursor, Export, Import, SidebarLeft, SidebarRight, Z
 import { t, tz } from '../i18n';
 import { canMakePair, makePair, currentFitZoom, pairComplete, reloadExternalEdits, setOriginal, setPages, setTool, solveNow, toggleCompare, useSession, zoomStep, zoomTo, zoomToFit } from '../state/session';
 import { settingsStore, useSettings } from '../state/settings';
-import { openDialog } from './actions';
+import { openFilesDialog, openFolderDialog } from './actions';
 import { baseName } from '../platform';
 import type { PreviewGamut } from '../canvas/colorSpace';
 import { sourceGeometryFor } from '@shared/filmEdge';
+import { showLibrary } from '../library/model';
 
 export function TopBar() {
   const leftCollapsed = useSettings((s) => s.leftCollapsed);
@@ -50,12 +51,24 @@ export function TopBar() {
     <div className="topbar editor-topbar" data-testid="topbar">
       <div className="topbar-controls">
         <div className="topbar-group">
+          <button className="icon-btn" title={tz('Photo library (Ctrl+L)', '照片图库（Ctrl+L）')} aria-label={tz('Photo library', '照片图库')} onClick={() => void showLibrary()} data-testid="library-button">▦</button>
           <button className="icon-btn" title={leftCollapsed ? t('helpDevelopRailShow') : t('helpDevelopRailHide')} onClick={() => settingsStore.getState().set('leftCollapsed', !leftCollapsed)}>
             <SidebarLeft />
           </button>
-          <button className="icon-btn" title={t('helpOpen') + ' (Ctrl+O)'} onClick={() => void openDialog()} data-testid="open-button">
+          <button className="icon-btn" title={tz('Open photographs… (Ctrl+O)', '打开照片…（Ctrl+O）')} aria-label={tz('Open photographs', '打开照片')} onClick={() => void openFilesDialog()} data-testid="open-button">
             <Import />
           </button>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button className="icon-btn" title={tz('More import options', '更多导入方式')} aria-label={tz('More import options', '更多导入方式')} data-testid="open-options">▾</button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content className="menu" sideOffset={4}>
+                <DropdownMenu.Item className="menu-item" onSelect={() => void openFilesDialog()}>{tz('Open photographs…', '打开照片…')}<span className="shortcut">Ctrl+O</span></DropdownMenu.Item>
+                <DropdownMenu.Item className="menu-item" onSelect={() => void openFolderDialog()}>{tz('Open folder…', '打开文件夹…')}<span className="shortcut">Ctrl+Shift+O</span></DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
           <button className="icon-btn" title={t('helpExport') + ' (Ctrl+E)'} disabled={!selection || !exportReady} onClick={() => setPages({ exportOpen: true })} data-testid="export-button">
             <Export />
           </button>

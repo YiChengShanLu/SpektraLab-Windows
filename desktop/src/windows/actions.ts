@@ -3,9 +3,9 @@
 import { tz } from '../i18n';
 import { platform } from '../platform';
 import { host } from '../host/client';
-import { flushSave, openFolder, openPaths, pairComplete, sessionStore, setPages } from '../state/session';
+import { flushSave, openFolder, openPaths, pairComplete, requestPrint, sessionStore, setPages } from '../state/session';
 
-export async function openDialog() {
+export async function openFolderDialog() {
   if (sessionStore.getState().batchExporting) return;
   const dir = await platform().pickFolder(tz('Open a folder of photographs', '打开照片文件夹'));
   if (dir) await openFolder(dir);
@@ -34,5 +34,5 @@ export async function restartHost() {
 }
 
 export function openExport() {
-  if (sessionStore.getState().selection && pairComplete()) setPages({ exportOpen: true });
+  if (sessionStore.getState().selection && pairComplete()) { void requestPrint(); setPages({ exportOpen: true }); }
 }

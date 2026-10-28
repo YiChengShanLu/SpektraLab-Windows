@@ -53,7 +53,16 @@ export function tauriPlatform(): Platform {
       const r = await save({ title, defaultPath, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
       return r ?? null;
     },
+    async pickDocument(title, extensions) {
+      const r = await open({ title, multiple: false, filters: [{ name: 'Library', extensions }] });
+      return typeof r === 'string' ? r : null;
+    },
     reveal: (path) => revealItemInDir(path),
+    async pickApplication(title) {
+      const r = await open({ multiple: false, title, filters: [{ name: 'Application', extensions: ['exe'] }] });
+      return typeof r === 'string' ? r : null;
+    },
+    openExportedFiles: (paths, application) => invoke<void>('open_exported_files', { paths, application }),
     openUrl: (url) => openUrl(url),
     async message(title, text, kind = 'info') {
       await message(text, { title, kind });

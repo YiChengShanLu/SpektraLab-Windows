@@ -9,11 +9,11 @@ import { useEffect, useRef, useState } from 'react';
 import { Checkbox, NumberField, PillMenu, ScrubSlider, Section } from '../controls/controls';
 import { t, tz } from '../i18n';
 import { platform, baseName } from '../platform';
-import { sessionStore, setPages, useSession } from '../state/session';
+import { select, sessionStore, setPages, useSession } from '../state/session';
 import { settingsStore } from '../state/settings';
 import { host, type ProofReply } from '../host/client';
 import { Thumb } from '../windows/Filmstrip';
-import { GEOMETRY_DEFAULT } from '@shared/geometry';
+import { GEOMETRY_DEFAULT, type Geometry } from '@shared/geometry';
 import { paintOutput } from '../canvas/colorSpace';
 import { type ExportRecipe, editRecipe, recipeSummary, DEFAULT_RECIPES, NAME_TOKENS, EXPORT_SPACES, type NameToken, decodeRecipes, extensionOf } from './recipes';
 import { captureExportFrames, exportCube, exportFrame, renderProof, hostWrites, outputFor, targetFor, type ExportJob, type ExportOutcome } from './exporter';
@@ -24,6 +24,26 @@ const TOKEN_LABEL: Record<NameToken, () => string> = {
   printStock: () => tz('Print', '相纸'),
   date: () => tz('Date', '日期'),
 };
+
+/** Mount only nearby thumbnails, so a large export worklist cannot fill the host queue. */
+function ExportCell({ path, geometry, chosen, disabled, height = 140 }: {
+  path: string; geometry: Geometry; chosen: boolean; disabled: boolean; height?: number;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const [visible, setVisible] = useState(typeof IntersectionObserver === 'undefined');
+  useEffect(() => {
+    if (!ref.current || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(!!entry?.isIntersecting), { rootMargin: '240px' });
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, []);
+  return <button ref={ref} className={'export-cell' + (chosen ? ' open' : '')} data-export-path={path}
+    aria-label={tz(`Preview ${baseName(path)}`, `预览 ${baseName(path)}`)} aria-pressed={chosen} title={path} disabled={disabled}
+    onClick={() => { if (!sessionStore.getState().batchExporting) void select(path); }}>
+    <span className="export-thumb" style={{ height }}>{visible && <Thumb path={path} geometry={geometry} height={height} />}</span>
+    <span className="export-filename">{baseName(path)}</span>
+  </button>;
+}
 
 async function loadRecipes(): Promise<ExportRecipe[]> {
   try {
@@ -60,6 +80,9 @@ export function ExportPage() {
   const [log, setLog] = useState<{ name: string; outcome: ExportOutcome }[]>([]);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [sample, setSample] = useState('');
+  const [view, setView] = useState(settingsStore.getState().exportView);
+  const [columns, setColumns] = useState(settingsStore.getState().exportGridColumns);
+  const [openError, setOpenError] = useState('');
   const stop = useRef(false);
   const active = useRef<ExportJob | null>(null);
   const proof = useRef<HTMLCanvasElement>(null);
@@ -87,7 +110,7 @@ export function ExportPage() {
   useEffect(() => {
     const c = proof.current;
     if (c && proofImage) paintOutput(c, proofImage);
-  }, [proofImage, open]);
+  }, [proofImage, open, view]);
 
   useEffect(() => {
     const pane = proof.current?.parentElement;
@@ -99,7 +122,7 @@ export function ExportPage() {
     });
     observer.observe(pane);
     return () => observer.disconnect();
-  }, [open]);
+  }, [open, view]);
 
   useEffect(() => {
     const generation = ++proofGeneration.current;
@@ -164,11 +187,13 @@ export function ExportPage() {
       pair: state.pair, pairInfo: state.pairInfo,
     } : null;
     stop.current = false;
+    setOpenError('');
     setLog([]);
     setProgress({ done: 0, total: paths.length });
     sessionStore.setState({ batchExporting: true });
     let done = 0;
     let lease: number | null = null;
+    const written: string[] = [];
     try {
       // Keep the native workspace lease between frames as well as during
       // each host call, so an external editor cannot change this batch's inputs.
@@ -184,6 +209,7 @@ export function ExportPage() {
           });
         platform().log(outcome.kind === 'failed' ? 'error' : 'info', `export ${baseName(item.path)}: ${JSON.stringify(outcome)}`);
         setLog((l) => [...l, { name: baseName(item.path), outcome }]);
+        if (outcome.kind === 'written') written.push(outcome.path);
         if (outcome.kind === 'cancelled') break;
         setProgress({ done: ++done, total: paths.length });
       }
@@ -195,6 +221,10 @@ export function ExportPage() {
       active.current = null;
       if (lease !== null) await platform().workspaceEnd(lease).catch((e) => platform().log('error', `export lease: ${String(e)}`));
       sessionStore.setState({ batchExporting: false });
+    }
+    if (written.length && recipe.openWith) {
+      try { await platform().openExportedFiles(written, recipe.openWith.path); }
+      catch (error) { setOpenError(tz('Files were exported, but the application could not be opened: ', '文件已导出，但无法打开应用：') + String(error)); }
     }
   };
 
@@ -211,6 +241,17 @@ export function ExportPage() {
         <span className="bar-status">
           {progress ? tz(`${progress.done} of ${progress.total} processed`, `已处理 ${progress.done} / ${progress.total}`) : ''}
         </span>
+        <div className="export-view-controls" role="group" aria-label={tz('Export view', '导出视图')}>
+          {(['viewer', 'grid'] as const).map((mode) => <button key={mode} className={'btn' + (view === mode ? ' on' : '')}
+            aria-pressed={view === mode} data-testid={`export-${mode}-mode`}
+            onClick={() => { setView(mode); settingsStore.getState().set('exportView', mode); }}>
+            {mode === 'grid' ? tz('Grid', '网格') : tz('Viewer', '单图')}
+          </button>)}
+          {view === 'grid' && <label className="caption">{tz('Columns', '列数')} <input type="range" min={2} max={8} step={1}
+            aria-label={tz('Grid columns', '网格列数')} value={columns} onChange={(e) => {
+              const value = Number(e.target.value); setColumns(value); settingsStore.getState().set('exportGridColumns', value);
+            }} /></label>}
+        </div>
         <span className="pill-menu" style={{ marginRight: 12 }}>
           {tz(`${frames.length} image${frames.length === 1 ? '' : 's'}`, `${frames.length} 张`)}
         </span>
@@ -229,7 +270,7 @@ export function ExportPage() {
           </>
         )}
       </div>
-      <div className="export-body">
+      <div className={'export-body' + (view === 'grid' ? ' grid-view' : '')}>
         <aside className="rail left" style={{ pointerEvents: batch ? 'none' : undefined }}>
           <div className="rail-scroll">
             <Section
@@ -378,6 +419,22 @@ export function ExportPage() {
                 <span className="caption num">{size ? `${size.width} × ${size.height}` : ''}</span>
               </div>
             </Section>
+            <Section id="exp-open-with" title={tz('Open With', '导出后打开')}>
+              <PillMenu label={tz('Application', '应用')} value={!r.openWith ? 'none' : r.openWith.path ? 'application' : 'default'} fill
+                options={[{ value: 'none', label: tz('Do not open', '不打开') }, { value: 'default', label: tz('System default', '系统默认应用') },
+                  { value: 'application', label: tz('Choose application…', '选择应用…') }]}
+                onChange={(value) => {
+                  if (value !== 'application') { edit({ openWith: value === 'none' ? null : { path: '' } }); return; }
+                  void platform().pickApplication(tz('Open exported files with…', '选择用于打开导出文件的应用…')).then((path) => {
+                    if (path) edit({ openWith: { path } });
+                  }).catch((error) => setOpenError(String(error)));
+                }} />
+              {r.openWith?.path && <button className="btn export-application" title={r.openWith.path}
+                onClick={() => void platform().pickApplication(tz('Choose application', '选择应用')).then((path) => {
+                  if (path) edit({ openWith: { path } });
+                }).catch((error) => setOpenError(String(error)))}>{baseName(r.openWith.path)}</button>}
+              {openError && <p className="caption" role="alert">{openError}</p>}
+            </Section>
             <Section id="exp-summary" title={tz('Summary', '摘要')}>
               {!spaceSupported && <div className="caption">{tz('Update the engine to export this colour space.', '请更新引擎以导出此色彩空间。')}</div>}
               <div className="caption">
@@ -406,7 +463,12 @@ export function ExportPage() {
             </Section>
           </div>
         </aside>
-        <main className="export-proof" style={{ flexDirection: 'column' }}>
+        {view === 'grid' ? <main className="export-grid" data-testid="export-grid" aria-label={tz('Export photographs', '导出照片')}
+          style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+          {!frames.length && <p className="caption">{tz('Select photographs to export.', '请选择要导出的照片。')}</p>}
+          {frames.map((path) => <ExportCell key={path} path={path} chosen={path === selection} disabled={batch}
+            geometry={path === selection ? geometry : saved[path] ?? GEOMETRY_DEFAULT} />)}
+        </main> : <main className="export-proof" style={{ flexDirection: 'column' }}>
           <canvas ref={proof} data-testid="export-proof" style={{ display: proofImage ? undefined : 'none' }} />
           {proofStatus && <div className="caption" role="status">{proofStatus}</div>}
           {proofImage && <div className="caption" data-testid="proof-stats">
@@ -416,16 +478,13 @@ export function ExportPage() {
               : <>{tz('Outside target gamut', '超出目标色域')} {(100 * proofImage.proof.stats.outside_fraction).toFixed(2)}% · {tz('Gamut mapping applied', '色域映射作用')} {(100 * proofImage.proof.stats.moved_fraction).toFixed(2)}% · {tz('Clipped', '夹限')} {(100 * proofImage.proof.stats.clipped_fraction).toFixed(2)}%</>}
             {r.format === 'jpeg' && <><br />{tz('Before JPEG compression; compression artifacts are not simulated.', '显示 JPEG 压缩前的结果，不模拟压缩伪影。')}</>}
           </div>}
-        </main>
-        <aside className="export-strip">
+        </main>}
+        {view !== 'grid' && <aside className="export-strip">
           {frames.map((p) => (
-            <div key={p} className={'export-cell' + (p === selection ? ' open' : '')}>
-              {/* The whole photograph, turned, the crop under a mask — as the filmstrip (§7.7). */}
-              <Thumb path={p} geometry={p === selection ? geometry : (saved[p] ?? GEOMETRY_DEFAULT)} height={120} />
-              <span>{baseName(p)}</span>
-            </div>
+            <ExportCell key={p} path={p} geometry={p === selection ? geometry : (saved[p] ?? GEOMETRY_DEFAULT)}
+              height={120} chosen={p === selection} disabled={batch} />
           ))}
-        </aside>
+        </aside>}
       </div>
     </div>
   );

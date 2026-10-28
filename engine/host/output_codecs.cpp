@@ -112,7 +112,7 @@ bool png_to(Sink sink, const uint8_t* rgb, uint32_t w, uint32_t h,
     png_set_write_fn(png, state.get(), png_write, png_flush);
     png_set_IHDR(png, info, w, h, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-    png_set_compression_level(png, 3); // lossless, favour interactive export speed
+    png_set_compression_level(png, 2); // lossless; bound deflate search without the level-1 size penalty
     if (!icc.empty()) png_set_iCCP(png, info, "ICC Profile", PNG_COMPRESSION_TYPE_BASE,
                                    icc.data(), png_uint_32(icc.size()));
     if (!block.empty()) png_set_eXIf_1(png, info, png_uint_32(block.size()), const_cast<png_bytep>(block.data()));

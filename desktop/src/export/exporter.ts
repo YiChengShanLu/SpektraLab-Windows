@@ -13,6 +13,7 @@ import type { StockCatalog } from '@shared/stocks';
 import { latitudeRequest } from '@shared/latitude';
 import { host } from '../host/client';
 import { baseName, dirName, joinPath, platform } from '../platform';
+import { loadPhotoEdits } from '../library/edits';
 import { type ExportRecipe, extensionOf, hostFormat, resolveTarget, stem, stockToken } from './recipes';
 
 export interface FrameToExport {
@@ -82,10 +83,10 @@ export async function captureExportFrames(
     if (cancelled()) break;
     try {
       const active = path === current?.path ? current : null;
-      const saved = active ? null : await platform().sidecarLoad(path);
+      const saved = active ? null : await loadPhotoEdits(path);
       const sidecar = active?.sidecar ?? structuredClone(saved == null ? newSidecar() : decodeSidecar(saved));
       if (isPairPath(path)) {
-        const pair = active?.pair ?? decodePair(await platform().pairLoad(path));
+        const pair = active?.pair ?? decodePair((saved as Record<string, unknown> | null)?._spkLibraryPair ?? await platform().pairLoad(path));
         if (!pair) throw new Error('The half-frame pair recipe cannot be read.');
         const shots: PairInfo = {};
         for (const side of ['left', 'right'] as const) {

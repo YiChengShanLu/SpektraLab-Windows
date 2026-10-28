@@ -11,7 +11,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { clamp } from '@shared/params';
 import { settingsStore, useSettings } from '../state/settings';
-import { beginGesture } from '../state/session';
+import { beginGesture, endGesture } from '../state/session';
 import { Disclosure, Ellipsis, Reset } from './icons';
 
 // ------------------------------------------------------------------ Section
@@ -112,7 +112,7 @@ export function ScrubSlider(p: ScrubSliderProps) {
     const el = track.current!;
     el.setPointerCapture(e.pointerId);
     const r = el.getBoundingClientRect();
-    beginGesture();
+    beginGesture(true);
     // Click on the track jumps there; then the drag is relative.
     const v = lo + clamp((e.clientX - r.left) / r.width, 0, 1) * (hi - lo);
     const start = e.detail > 1 ? value : v;
@@ -134,6 +134,7 @@ export function ScrubSlider(p: ScrubSliderProps) {
   const onPointerUp = () => {
     if (drag.current) onCommit?.(value);
     drag.current = null;
+    endGesture();
   };
 
   const commitText = () => {
@@ -160,6 +161,7 @@ export function ScrubSlider(p: ScrubSliderProps) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onLostPointerCapture={onPointerUp}
         onDoubleClick={() => {
           if (disabled) return;
           beginGesture();

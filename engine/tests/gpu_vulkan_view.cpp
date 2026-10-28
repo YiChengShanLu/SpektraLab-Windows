@@ -108,6 +108,12 @@ void process_tests(const std::string& resources){
  check(view::process(gpu.get(),packed,q,identity,nullptr,0,r,e),e);
  check(r.pixels.size()==px.size()*2&&std::memcmp(r.pixels.data(),px.data(),r.pixels.size())==0,"all 65536 code values must survive neutral processing exactly");
  check_rgb(gpu.get(),packed,q,identity,r);
+ // Export readback must not overlap dead full-float planes with the CPU result.
+ q.export_intent=true;view::Result exported;
+ check(view::process(gpu.get(),packed,q,identity,nullptr,0,exported,e),e);
+ check(exported.pixels==r.pixels,"export scratch reclamation changed pixels");
+ check(gpu->pool_stats().total_bytes<=exported.pixels.size(),"export retained float scratch during CPU readback");
+ q.export_intent=false;
  // RGB8/RGB16 end mid-word for odd pixel counts; test every byte-tail class
  // and ensure the last live channel survives while padding remains private.
  for(uint32_t n:{1u,2u,3u,5u,7u,257u}){
@@ -278,8 +284,19 @@ void residency_tests(const std::string& resources){
  Session s(spk_open(engine.get(),&image,params,nullptr),spk_session_release);check(bool(s),spk_last_error(engine.get()));
  std::string e;view::Request q;q.rgba16=true;q.target_space="ProPhoto RGB";
  view::Result full_before,live_before,after;
- check(view::render(s.get(),q,full_before,e),e);q.tier="live";
+ check(view::render(s.get(),q,full_before,e),e);
+ const auto cold=json(spk_memory_report(engine.get()));
+ check(cold.at("pool").at("frame_high_water_bytes").as_double()<=double(size_t(w)*h*3*sizeof(float)*5+65536),
+       "cold film render pinned consumed input across coupler diffusion");
+ check(cold.at("pool").at("total_bytes").as_double()<=double(size_t(w)*h*3*sizeof(float)*2+65536),
+       "cold full view retained film/print scratch across display readback");
+ q.tier="live";
  check(view::render(s.get(),q,live_before,e),e);
+ view::Result original;
+ check(view::render_source(s.get(),800,"Display P3",original,e,true),e);
+ const auto source_read=json(spk_memory_report(engine.get()));
+ check(source_read.at("pool").at("frame_high_water_bytes").as_double()<=double(size_t(original.width)*original.height*3*sizeof(float)*2+65536),
+       "source preview re-filtered a full frame instead of reusing its tier image");
  auto ledger=[&](){return json(spk_memory_report(engine.get()));};
  const auto resident=ledger();
  const auto gpu_before=resident.at("persistent").at("bytes").as_double();

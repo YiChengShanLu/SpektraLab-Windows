@@ -6,10 +6,11 @@ import type { RgbaImage } from '../host/client';
 import type * as SessionModule from './session';
 import type * as FramesModule from './frames';
 import type { DisplayCacheDescriptor } from './displayCache';
+import type * as DisplayCache from './displayCache';
 const fake = vi.hoisted(() => ({ key: vi.fn(), read: vi.fn(), peek: vi.fn(), forget: vi.fn(),
   write: vi.fn(async (_key: string, _image: RgbaImage, _options: { retain: boolean }) => true),
   open: vi.fn(), close: vi.fn(), render: vi.fn(), source: vi.fn(), load: vi.fn() }));
-vi.mock('./displayCache', () => ({ displayCacheKey: fake.key, readDisplayCache: fake.read, writeDisplayCache: fake.write,
+vi.mock('./displayCache', async (original) => ({ ...await original<typeof DisplayCache>(), displayCacheKey: fake.key, readDisplayCache: fake.read, writeDisplayCache: fake.write,
   forgetDisplayMemoryCache: fake.forget, peekDisplayCache: fake.peek }));
 vi.mock('../host/client', () => ({ HostCallError: class extends Error {}, host: () => ({ open: fake.open, renderView: fake.render, renderSource: fake.source,
   setParams: async () => ({}), close: fake.close, thumbnail: async () => { throw new Error('No embedded fixture'); } }) }));
@@ -31,7 +32,7 @@ beforeEach(async () => {
   fake.close.mockResolvedValue(undefined);
   fake.render.mockImplementation(async (_sid: string, tier: string) => ({ ...picture('native'), tier, reprinted: true, ms: 1 }));
   fake.source.mockImplementation(async () => picture('source'));
-  const saved = newSidecar(); saved.params.filmEdge.seeded = true;
+  const saved = newSidecar(); saved.state = 'processed'; saved.params.filmEdge.seeded = true;
   fake.load.mockResolvedValue(encodeSidecar(saved));
   session = await import('./session'); frames = await import('./frames');
   session.sessionStore.setState({ hello, hostState: { phase: 'ready', hello } });

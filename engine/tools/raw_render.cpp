@@ -110,7 +110,7 @@ struct Result { spk_result value{}; ~Result(){spk_result_free(&value);} };
 int run(int argc,wchar_t** argv) {
     if(argc==2 && std::wstring(argv[1])==L"--help") {
         std::cout<<"spk_raw_render --input RAW --output TIFF --report JSON --resources DIR "
-                    "[--params JSON] [--decoded-output F32] [--decode-mode compatible16|headroom]\n"
+                    "[--params JSON] [--decoded-output F32] [--decode-mode compatible16|headroom|auto]\n"
                     "AHD, as-shot WB, linear ProPhoto 16-bit compatible decode; sRGB RGB16 TIFF.\n"
                     "headroom is opt-in: uint16 Bayer demosaic, float RGB conversion; not full-float RAW.\n"
                     "Existing outputs are never overwritten.\n";return 0;
@@ -124,7 +124,7 @@ int run(int argc,wchar_t** argv) {
         if(k==L"--decode-mode") {
             require(i+1<argc && !mode_seen,"missing value or duplicate decode mode");
             decode_mode=argv[i+1];mode_seen=true;
-            require(decode_mode==L"compatible16"||decode_mode==L"headroom","decode mode must be compatible16 or headroom");
+            require(decode_mode==L"compatible16"||decode_mode==L"headroom"||decode_mode==L"auto","decode mode must be compatible16, headroom or auto");
             continue;
         }
         require(k==L"--input"||k==L"--output"||k==L"--report"||k==L"--resources"||k==L"--params"||k==L"--decoded-output","unknown argument");
@@ -163,7 +163,9 @@ int run(int argc,wchar_t** argv) {
     timings.set("engine_create",Json(ms(t)));
     spk::io::DecodedRaw decoded;
     t=Clock::now();
-    auto decoded_ok=decode_mode==L"headroom"
+    auto decoded_ok=decode_mode==L"auto"
+        ? spk::io::decode_raw_auto(args[L"--input"],nullptr,decoded,error)
+        : decode_mode==L"headroom"
         ? spk::io::decode_raw_headroom(args[L"--input"],decoded,error)
         : spk::io::decode_raw_compatible(args[L"--input"],decoded,error);
     require(decoded_ok,"RAW decode: "+error);
@@ -202,7 +204,7 @@ int run(int argc,wchar_t** argv) {
     const bool headroom=decoded.metadata.headroom_enabled;
     decode.set("mode",Json(std::string(headroom?"headroom":"compatible16")));
     decode.set("policy",Json(std::string(headroom
-        ? "headroom: uint16 Bayer AHD with maximum-normalised camera WB; float ProPhoto matrix; restored WB exposure scale; RGB conversion does not clip"
+        ? "headroom: uint16 Bayer AHD with maximum-normalised camera WB and highlight chroma blending; float ProPhoto matrix; restored WB exposure scale; RGB conversion does not clip"
         : "compatible16: AHD, as-shot WB, linear ProPhoto RGB, uint16 clip then float32 / 65535")));
     decode.set("preserves_negative_rgb",Json(headroom));decode.set("preserves_above_one_rgb",Json(headroom));
     decode.set("preservation_scope",Json(std::string(headroom?"RGB conversion after uint16 demosaic":"none")));

@@ -12,6 +12,7 @@ const fake = vi.hoisted(() => ({
   select: vi.fn(), request: vi.fn(), renderProof: vi.fn(), cancel: vi.fn(), probe: vi.fn(), sidecarLoad: vi.fn(),
   ensureDir: vi.fn(), pathExists: vi.fn(), log: vi.fn(), storeRead: vi.fn(), paint: vi.fn(),
   workspaceBegin: vi.fn(), workspaceEnd: vi.fn(),
+  openExportedFiles: vi.fn(),
   output: { width: 1, height: 1, colorSpace: 'display-p3', data: new Uint8Array([180, 120, 80, 255]) },
 }));
 vi.mock('../state/session', async () => {
@@ -21,7 +22,8 @@ vi.mock('../state/session', async () => {
   return { sessionStore, select: fake.select, setPages: vi.fn(),
     useSession: <T,>(selector: (s: SessionState) => T) => useStore(sessionStore, selector) };
 });
-vi.mock('../state/settings', () => ({ settingsStore: { getState: () => ({ recalculateEffectsAfterCrop: false }) } }));
+vi.mock('../state/settings', () => ({ settingsStore: { getState: () => ({ recalculateEffectsAfterCrop: false,
+  exportView: 'viewer', exportGridColumns: 3, set: vi.fn() }) } }));
 vi.mock('../host/client', () => ({ host: () => ({ transport: { request: fake.request }, renderProof: fake.renderProof, cancel: fake.cancel, probe: fake.probe }) }));
 vi.mock('../platform', async (original) => ({ ...await original<typeof PlatformModule>(), platform: () => fake }));
 vi.mock('../canvas/output', () => ({ useOutput: () => fake.output }));
@@ -33,6 +35,7 @@ vi.mock('../controls/controls', () => ({
 }));
 vi.mock('../i18n', () => ({ t: (key: string) => key, tz: (english: string) => english }));
 import { ExportPage } from './ExportPage';
+import { DEFAULT_RECIPES } from './recipes';
 import { sessionStore } from '../state/session';
 
 let root: Root;
@@ -81,6 +84,32 @@ afterEach(async () => {
 });
 
 describe('export page batch integration', () => {
+  it('opens only completed files after releasing the batch lease and reports an application failure without undoing exports', async () => {
+    fake.storeRead.mockResolvedValue([{ ...DEFAULT_RECIPES[0], id: 'owned-open-with', openWith: { path: 'E:/viewer.exe' } }]);
+    fake.openExportedFiles.mockImplementation(async () => {
+      expect(sessionStore.getState().batchExporting).toBe(false);
+      expect(fake.workspaceEnd).toHaveBeenCalled();
+      throw new Error('viewer unavailable');
+    });
+    await mount();
+    await click(div.querySelector('[data-testid=export-run]')!);
+    expect(fake.openExportedFiles).toHaveBeenCalledWith(['D:/out/image.jpg', 'D:/out/image.jpg'], 'E:/viewer.exe');
+    expect(div.textContent).toContain('Files were exported, but the application could not be opened');
+    expect(div.textContent).toContain('2 of 2 processed');
+  });
+  it('browses the export worklist in a grid without replacing the picked set, and locks it during export', async () => {
+    await mount();
+    const grid = div.querySelector<HTMLButtonElement>('[data-testid=export-grid-mode]');
+    expect(grid).not.toBeNull();
+    await click(grid!);
+    expect(div.querySelector('[data-testid=export-grid]')).not.toBeNull();
+    const other = div.querySelector<HTMLButtonElement>('[data-export-path="D:/photos/b.NEF"]')!;
+    await click(other);
+    expect(fake.select).toHaveBeenCalledWith('D:/photos/b.NEF');
+    expect(sessionStore.getState().picked).toHaveLength(2);
+    await act(async () => { sessionStore.setState({ batchExporting: true }); });
+    expect(other.disabled).toBe(true);
+  });
   it('freezes the selected unsaved grade, exports sequentially and never selects another photo', async () => {
     sessionStore.getState().sidecar.adjustments.exposure = 1.5;
     const before = sessionStore.getState();

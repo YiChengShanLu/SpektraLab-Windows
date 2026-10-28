@@ -7,7 +7,7 @@
 import { webviewOwnsMenuKeys } from './keys';
 import { Menu, MenuItem, PredefinedMenuItem, Submenu } from '@tauri-apps/api/menu';
 import { t, tz } from '../i18n';
-import { openDialog, openExport, openFilesDialog, restartHost, revealSettings } from './actions';
+import { openFolderDialog, openExport, openFilesDialog, restartHost, revealSettings } from './actions';
 import {
   setAdjustments,
   makePair,
@@ -34,6 +34,8 @@ import {
 import { settingsStore } from '../state/settings';
 import { turned } from '@shared/geometry';
 import { platform } from '../platform';
+import { libraryStore, showLibrary } from '../library/model';
+import { replaceAppMenu } from './lifecycle';
 
 /** The Ctrl chords the menu owns; keys.ts leaves them to the menu in Tauri. */
 export const MENU_CHORDS = new Set([
@@ -56,15 +58,17 @@ export const MENU_CHORDS = new Set([
   'ctrl+alt+[',
   'ctrl+alt+]',
   'ctrl+,',
+  'ctrl+l',
   'ctrl+q',
   'f11',
 ]);
 
-const item = (text: string, action: () => void, accelerator?: string) => {
+const item = (text: string, action: () => void, accelerator?: string, inLibrary = false) => {
   const webKeys = webviewOwnsMenuKeys();
   return MenuItem.new({
+    enabled: !libraryStore.getState().visible || inLibrary,
     text: webKeys && accelerator ? `${text}\t${accelerator.replace('CmdOrCtrl', 'Ctrl')}` : text,
-    action: () => { if (!sessionStore.getState().batchExporting) action(); },
+    action: () => { if (!sessionStore.getState().batchExporting && (!libraryStore.getState().visible || inLibrary)) action(); },
     accelerator: webKeys ? undefined : accelerator,
   });
 };
@@ -74,13 +78,14 @@ export async function installMenu(): Promise<void> {
   const file = await Submenu.new({
     text: tz('&File', '文件(&F)'),
     items: [
-      await item(tz('Open Folder…', '打开文件夹…'), () => void openDialog(), 'CmdOrCtrl+O'),
-      await item(tz('Open Photographs…', '打开照片…'), () => void openFilesDialog(), 'CmdOrCtrl+Shift+O'),
+      await item(tz('Photo Library…', '照片图库…'), () => void showLibrary(), 'CmdOrCtrl+L', true),
+      await item(tz('Open Photographs…', '打开照片…'), () => void openFilesDialog(), 'CmdOrCtrl+O'),
+      await item(tz('Open Folder…', '打开文件夹…'), () => void openFolderDialog(), 'CmdOrCtrl+Shift+O'),
       await item(tz('Export…', '导出…'), openExport, 'CmdOrCtrl+E'),
       await sep(),
-      await item(tz('Settings…', '设置…'), () => setPages({ settingsOpen: true }), 'CmdOrCtrl+,'),
+      await item(tz('Settings…', '设置…'), () => setPages({ settingsOpen: true }), 'CmdOrCtrl+,', true),
       await sep(),
-      await item(tz('Quit', '退出'), () => void import('@tauri-apps/api/window').then((w) => w.getCurrentWindow().close()), 'CmdOrCtrl+Q'),
+      await item(tz('Quit', '退出'), () => void import('@tauri-apps/api/window').then((w) => w.getCurrentWindow().close()), 'CmdOrCtrl+Q', true),
     ],
   });
   const edit = await Submenu.new({
@@ -168,6 +173,6 @@ export async function installMenu(): Promise<void> {
     ],
   });
   const menu = await Menu.new({ items: [file, edit, view, frame, crop, tool, help] });
-  await menu.setAsAppMenu();
+  await replaceAppMenu(menu);
   void t;
 }

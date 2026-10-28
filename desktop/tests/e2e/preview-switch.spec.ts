@@ -105,6 +105,7 @@ test('a late cache read from the previous photograph cannot replace the latest p
     const app = (window as unknown as { __spk: { sessionStore: unknown } }).__spk;
     if (session.sessionStore !== app.sessionStore) throw new Error('The test must control the displayed editor session');
     const pending = new Map<string, (value: ArrayBuffer) => void>();
+    for (const path of ['/owned/a.ARW', '/owned/b.ARW']) localStorage.setItem('sidecar:' + path, JSON.stringify({ state: { processed: {} } }));
     const reads: string[] = [], opened: string[] = [];
     const image = (red: number) => {
       const bytes = encodeFrame({ hit: true, metadata: { image: { width: 4, height: 2, format: 'rgba8', colorSpace: 'sRGB',

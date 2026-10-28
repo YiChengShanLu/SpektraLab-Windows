@@ -10,7 +10,7 @@ namespace spk::io::detail {
 
 // Compute the exposure convention from the WB actually used by LibRaw,
 // including its fourth (second-green) entry. A maximum of one is required:
-// these must be post-scale_colors multipliers from highlight=1.
+// these must be post-scale_colors multipliers from non-clipping highlight mode.
 bool headroom_exposure_restore(const std::array<float, 4>& applied_wb,
                                double& restore, std::string& error);
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { checkWindowsUpdate, RELEASE_API, selectWindowsRelease } from './updateCheck';
-const root = 'https://github.com/JamesQiu2005/SpektraLab/releases';
+const root = 'https://github.com/YiChengShanLu/SpektraLab-Windows/releases';
 const release = (tag = 'spektralab-v1.3.3', name = 'SpektraLab-windows-x64.zip') => ({ tag_name: tag,
   html_url: `${root}/tag/${tag}`, draft: false, prerelease: false,
   assets: [{ name, browser_download_url: `${root}/download/${tag}/${name}`, size: 1234, state: 'uploaded' }] });

@@ -2,13 +2,15 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-**Windows development:** this branch also contains a C++/Vulkan backend,
-native LibRaw decoding, RGB16 TIFF export and Windows desktop viewers.
-See the [Windows build guide](engine/WINDOWS.md) and
-[feature coverage](engine/WINDOWS_FEATURE_COVERAGE.md) for the tested scope.
-The [Qt Quick frontend](windows_UI/README.md) brings the film/print editor layout
-to Windows; the [minimal Win32 viewer](engine/WINDOWS_DESKTOP.md) is also retained.
-The macOS product described below has additional interface and display features.
+**Windows 1.3.2:** [Download installer or portable ZIP](https://github.com/YiChengShanLu/SpektraLab-Windows/releases/tag/v1.3.2-windows).
+
+**Windows branch:** the current Windows editor is the Tauri/React app in
+`desktop/`, using native LibRaw/Vulkan and an integrated photo-library SDK.
+See [Windows use, build instructions and limitations](docs/WINDOWS.md),
+[Windows changes](CHANGELOG-Windows.md) and [source/license notices](THIRD_PARTY.md).
+The old Qt/Win32 viewers are retained as historical implementations.
+The original Mac product and its documentation follow below; Windows does not
+claim pixel-equivalent rendering or Mac EDR display support.
 
 A film and print simulator for macOS. Open a RAW, pick a film and a paper,
 and get a physically modelled print — grain, halation, couplers, the enlarger's

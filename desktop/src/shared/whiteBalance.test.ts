@@ -36,13 +36,13 @@ describe('the As Shot boxes (WhiteBalanceBoxes)', () => {
 
 describe('the wire', () => {
   it('sends a requested Lensfun correction independently of white balance and keeps raster decode untouched', () => {
-    expect(decodeWire({ ...DECODE_DEFAULT, lensCorrection: true }, true)).toEqual({ white_balance: { mode: 'as_shot' }, lens_correction: true });
+    expect(decodeWire({ ...DECODE_DEFAULT, lensCorrection: true }, true)).toEqual({ white_balance: { mode: 'as_shot' }, lens_correction: true, raw_mode: 'auto' });
     expect(decodeWire({ ...DECODE_DEFAULT, lensCorrection: true }, false)).toBeNull();
   });
   it('As Shot is the camera mode; everything else is custom numbers', () => {
-    expect(decodeWire(DECODE_DEFAULT, true)).toEqual({ white_balance: { mode: 'as_shot' } });
+    expect(decodeWire(DECODE_DEFAULT, true)).toEqual({ white_balance: { mode: 'as_shot' }, raw_mode: 'auto' });
     expect(decodeWire({ ...DECODE_DEFAULT, whiteBalance: 'Daylight', temperature: 5500, tint: 0 }, true)).toEqual({
-      white_balance: { mode: 'custom', temperature_k: 5500, tint: 0 },
+      white_balance: { mode: 'custom', temperature_k: 5500, tint: 0 }, raw_mode: 'auto',
     });
   });
   it('a raster carries no decode white balance (the host refuses it)', () => {

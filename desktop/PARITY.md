@@ -1,55 +1,178 @@
-# PARITY — the macOS app (`modern_UI/Spektrafilm`) → `desktop/`
+# Mac → Windows functional parity (reviewed 2026-10-27)
 
-What of the SwiftUI/Metal app this TypeScript (Tauri 2) port carries, area by
-area. **ported** = the behaviour is here; **partial** = present with a stated
-gap; **stub** = the controls are drawn and disabled with the reason;
-**skipped** = deliberately not carried, with why.
+This replaces the obsolete initial port checklist. The Windows baseline is PR #17,
+`3dba85b1dfc3326372b83da3d703ba4b9a9ac35e`, plus the local completion work.
+The remote refs were refreshed for this review:
 
-Owner's scope decision (2026-10-06): the Linux/Windows engine refuses the
-contrast mask, scene latitude mapping, the Cineon DI, film edge/overscan, date
-back and the half-frame pair in this version; their sections are cheap UI
-only — present, disabled with a tooltip driven by
-`capabilities.backend.unsupported_features` — so enabling them later is a
-wiring job. `params.wire()` omits their rows while the host cannot do them
-(the settings stay in the sidecar).
+- Mac 1.x application: `origin/main`, `99c2d5c9883be485085895157279cc7c4eaa8db6`.
+- Mac 2.0 Library integration: `origin/v2-ui`, `4a46ecc1b6e929c05ec8ef8202b598030b6e40e4`.
+- Library SDK 0.3.1 / ABI 1 / schema 3: `afafee63ba8be068271eb18a88a020c2a41d206b`.
 
-| Swift area | port | status | notes |
-|---|---|---|---|
-| `SpektrafilmApp.swift` window, menus, shortcuts | `windows/menus.ts`, `windows/keys.ts`, `main.tsx` | ported | Native menu bar built in TS (localised). Ctrl for ⌘. Capture One mapping: Ctrl+O/E, Ctrl+Z (+Ctrl+Shift+Z/Ctrl+Y redo — the Mac has no redo), Ctrl+Shift+C/V settings, Ctrl+A, Ctrl+=/−/0, Ctrl+B, Ctrl+Shift+F/B, Ctrl+Alt+[ ]/R, V/H/C, ←/→, `,` `.`, Y, Space (original). Single keys are not accelerators (trap 32, below). Full screen is F11 (⌃⌘F on the Mac). |
-| `Windows/TypingKeyGuard.swift` (trap 32) | `windows/keys.ts` `isTypingKey` + `keys.test.ts` | ported | A focused text field gets characters, arrows and delete; Ctrl/Alt chords, Enter/Esc/Tab still reach the shortcuts. |
-| `Windows/EditorWindow.swift`, `TopBar.swift` | `windows/EditorWindow.tsx`, `TopBar.tsx` | ported | v4 bar order. Native title bar (see NOTES "Decisions"), so no traffic-light clearance logic. Rails fold to zero; no drag-resize of rail widths yet. |
-| `Windows/SettingsWindow.swift` | `windows/Dialogs.tsx` `SettingsDialog` | partial | General (language, interface scale 100/115/130 %, reset layout), Rendering (preview edge, crop re-maps, decouple effects, DI blue compensation — disabled while the DI is refused), Diagnostics (versions, GPU, unsupported features, log/sidecar folders, host diagnostics, restart). Memory, disk cache, log retention, diagnostic bundle, update check and Agents pages skipped (brief §6). An in-window dialog, not a second window (one webview = one session store). |
-| `Windows/AboutWindow.swift` | `Dialogs.tsx` `AboutDialog` | ported | GPL + CC BY-SA attribution texts (copied from the Mac bundle by `scripts/copy-assets.mjs`). |
-| `Windows/BootWindow.swift` | `HostFailure` banner/dialog | partial | No boot window; the canvas says "waiting for the engine", the failure dialog names the reason, shows the host's stderr tail and a Vulkan hint. |
-| `Localization/Strings.swift` (264 keys, en + zh-Hans) | `i18n/en.json`, `zh-Hans.json` via `scripts/extract-strings.mjs` | ported | Generated, not hand-copied. Point-of-use `L(_, zh:)` pairs are `tz(en, zh)` and were translated where the port shows them. |
-| `Theme/Theme.swift` | `styles/theme.css` | ported | Colours, two section-title sizes, rail metrics. System fonts (Segoe UI Variable / Noto Sans / Noto Sans CJK SC / Microsoft YaHei); nothing bundled. |
-| `Model/Params.swift` (FilmParams, wire, delta, layers) | `shared/params.ts` + test | ported | Wire names pinned against the engine's `kFields` (`mock-host/schema-fields.json`, extracted from `engine/src/core/params.cpp`). Feature gate drops refused rows. |
-| `Model/Adjustments.swift`, `CurveMath.swift`, `Shaders.metal` `layer2` | `shared/adjustments.ts`, `canvas/glRenderer.ts` | ported | One GLSL pass = Layer 2 + geometry + compare. The CPU twin (`layer2Pixel`) is what the export uses. Mid-grey pivot follows the encoding (sRGB on the canvas, ROMM for a ProPhoto file). Masks skipped (withdrawn on the Mac too: `FeatureFlags.masks = false`). |
-| `Model/Geometry.swift` | `shared/geometry.ts` + test | ported | Same maps (`sourcePoint`, `outputPoint`, `uniform`, straighten/fit/resize/aspect locks). The test pins the GLSL transliteration to the model. |
-| `Canvas/CropOverlay.swift`, crop tool | `canvas/Canvas.tsx` `CropOverlay` | partial | Handles, thirds, move/resize with aspect locks, straighten by slider. The photograph is shown level with the crop drawn rotated (the Mac turns the photograph under a level crop); no straighten-by-line gesture yet. |
-| `Canvas/Renderer.swift`, `MetalCanvasView`, `ViewportState` | `canvas/Canvas.tsx`, `glRenderer.ts` | ported | Fit / 100 % / zoom steps / wheel zoom about the pointer / pan (Hand, middle button, or drag when zoomed). Zoom is native px per device px, so 100 % is the frame's own pixels at any tier. Pan/zoom are hand-written pointer handling rather than d3-zoom: the view state has to be the session's (zoom pill, menu, navigator), and d3-zoom's transform would be a second owner of it. |
-| `Canvas/CompareOverlay.swift` | `Canvas.tsx` compare line | ported | Split with a draggable line; Before = the host's embedded/fast decode preview. |
-| tiers, `full` badge (§7.3) | `state/session.ts` scheduler | ported | Every edit renders `live` at the preview edge; the original-resolution render starts 400 ms after the last edit and is dropped if anything moved; badge `preview` → `full`. One in flight, sent-vs-wanted coalescing; print-only deltas use `reprint`. |
-| histogram | `canvas/histogram.ts` (+ worker) | ported (fixed) | Counts the canvas's **output** (geometry + Layer 2), unlike the Mac's known defect (§7.7). |
-| `Panels/Sections/NavigatorSection.swift` | `LeftRail.tsx` | ported | Shows the cropped, turned output (the same offscreen render as the histogram — trap 33), the visible rectangle when zoomed, click/drag to pan. |
-| `ClipboardSection`, `Model/SettingsClipboard.swift` | `shared/clipboard.ts` + test, `LeftRail.tsx` | ported | Six groups (masks group omitted with masks). Copy / Paste (to picked) / Sync. |
-| `FilmSection`, `PrintProfileSection`, `StockCatalog` | `LeftRail.tsx`, `StockList.tsx`, `shared/stocks.ts` | ported | Mac `StockCatalog.json` + film covers. Positive/Negative, Still/Cine, Digital (stub), No Print Profile, Print Effects, EDR. A slide film greys the papers with the reason. |
-| `FilmEdgeSection`, `DateBackSection` | `LeftRail.tsx` | stub | Main switches + a few controls, disabled by `unsupported_features`. |
-| `CropSection` | `LeftRail.tsx` | ported | Aspect (+ portrait), straighten, rotate/flip, output size readout. |
-| `EnlargerSection` | `LeftRail.tsx` | ported | Brightness (stops), Y/M filter shifts with print-colour tracks, pre-flash. Pair scope skipped (no pairs). |
-| `LatitudeSection` | `RightRail.tsx` | partial | The host *measures* (`scene_latitude` works); the plot shows the scene histogram over the medium's range with below/within/above. Separation ramp and pull-back overlay not drawn. |
-| `CameraSection`, `WhiteBalanceRows`, `WhiteBalanceBoxes` | `RightRail.tsx`, `shared/whiteBalance.ts` | partial | Metering pill (Custom = meter off), Film Exposure + As Shot, Vignetting (Layer 2). Camera Temperature / Tint at decode with the two As Shot boxes (the Mac's rules, unit-tested) and the presets in the section's "•••"; an edit re-decodes through `redecode` (R2, landed 950dd47), debounced 350 ms, one undo step; RAW only (a raster greys the rows with the Mac's reason). **Lens Correction stays disabled**: R2 declined it (LibRaw has no lens profiles). The neutral picker (eyedropper) is not ported. |
-| `FilmFormatSection` (ParameterSections.swift) | `RightRail.tsx` | ported | Size (cine pills) / Side / Side Length + unit, effect toggles, anti-halation layer, decoupled strengths (Settings), sub-layer grain in the menu. Film format derived from the photograph's aspect. |
-| `ScenePlacementSection`, `ToneMaskSection` | `RightRail.tsx` | stub | Scene Placement disabled (mapping refused). Tone Mask hidden as on the Mac (`FeatureFlags.toneMask = false`). |
-| Post-Dev `RightSections.swift` | `RightRail.tsx`, `CurveEditor.tsx` | partial | White Balance, Exposure (8 sliders), Curve (5 channels, add/move/remove points, histogram behind), Color Balance as a hue/saturation disc + three sliders per zone (the Mac's `ColorWheel` has more affordances). |
-| `Panels/Filmstrip.swift`, `CropMaskedThumbnail` | `windows/Filmstrip.tsx`, `shared/surfaces.ts` + test | ported | Whole photograph, turned/flipped, outside of the crop under an 82 % mask; live geometry for the open frame, saved for the rest; print thumbnail replaces the embedded one after a full render. Click / Ctrl-click picks. Drag-to-reorder (`FrameOrder`) skipped. |
-| `Model/Session.swift` select / develop / undo / save | `state/session.ts` | ported | Undo (60 steps, 0.5 s coalescing) + redo. Host restart re-opens the frame from its sidecar. |
-| `Model/Sidecar.swift` | `shared/sidecar.ts` + test, `src-tauri/src/files.rs` + test | ported | `<app data>/Sidecars/<file>-<sha256(path)[:16]>.spektra.json`, Mac JSON shape, unknown keys (masks, heldCrop…) carried through, neighbour migration, moved-file fingerprint (inode on Linux; not on Windows). |
-| `Import/*` (decode, ThumbnailCache, FramePipeline, disk cache) | host `thumbnail`/`open` | partial | Decoding is the host's (LibRaw / raster). Thumbnails cached in memory per folder; no disk cache. |
-| open folder / files / drop / open-with / single instance | `platform/*`, `files.rs`, `lib.rs` | ported | RAW + TIFF/JPEG/PNG. A second launch hands its paths to the running window. |
-| `Export/ExportPage.swift`, `ExportRecipe.swift`, `Exporter.swift` | `export/*` + test | partial | Recipes (4 built-ins, editable, stored in app data), location, existing-file policy, naming tokens + sample, format/depth/space/quality/long edge, batch holding the frame (trap 34), Stop between frames, .cube from the page menu, DI recipe (refused by this engine). The file is the canvas's frame via R1 `write_image` (verified with the real host). The strip shows each frame turned with its crop mask. The proof is the canvas output at 1400 px, not at file resolution; Open With, grid view and job log skipped. |
-| trap 33 surface agreement | `shared/surfaces.test.ts`, `geometry.test.ts` | ported | Crop + quarter turn: export pixels = shader map; filmstrip outline = canvas output corners. |
-| `Agent/`, `Updates/`, `Diagnostics/` bundle & memory | — | skipped | Brief §6. Logging is `tauri-plugin-log` (rotating, 4 MB × 5) in the OS log dir; the host's stderr goes there too. |
-| `Model/HalfFramePair.swift`, `PairSection`, `PairComposer` | — | skipped | Engine refuses pairs in this version (owner's scope). |
-| `Model/Mask.swift`, `MasksSection` | — | skipped | Withdrawn on the Mac as well. |
-| `Canvas/ColourManagement.swift`, soft proof | host `display: "srgb"` | partial | The host performs the output transform to sRGB for the canvas. No display-profile awareness (wide-gamut monitors see sRGB). |
+The Swift source was compared with the TypeScript, Rust and C++ implementations.
+The read-only, hash-checked upstream snapshots and source manifests are in
+`build/local/mac-full-audit/`. This is a source and Windows execution review;
+there was no running Mac available for image or UI comparisons.
+
+| Mac area | Windows implementation | Current result and limits |
+|---|---|---|
+| App, menus, shortcuts, typing guard | `windows/`, `platform/`, `main.tsx` | Implemented; Ctrl/F11 and Windows native menus replace macOS keys/title bar. Handled control keys no longer also move the photograph. |
+| Editor window, rails, filmstrip | `windows/EditorWindow.tsx`, `PanelResize`, `Filmstrip` | Collapse, resize, double-click width reset, drag reorder, visibility and interface scale persist. |
+| Theme and localization | `styles/theme.css`, `i18n/` | English/Chinese and established theme retained; Segoe/YaHei metrics differ from macOS system fonts. |
+| Settings and About | `SettingsPages`, `DiagnosticSettings`, `Dialogs` | General/rendering/memory/cache/diagnostics/Agents/update check and attribution implemented. Settings/About use an in-window page/dialog. |
+| Stock lists and material constraints | `StockList`, `shared/stocks.ts`, `params.ts` | Color negative/slide, monochrome film/paper, pairing and direct-scan transitions implemented using the upstream catalog. |
+| Film format, grain, halation, effects | `LeftRail`, `RightRail`, engine | Feature gates, physical scale, sublayer grain, strengths, anti-halation, decoupling implemented. |
+| Film edge and camera variation | `shared/filmEdge.ts`, session, native engine | Gates, strip/overscan, holes, camera/frame seeds, frame numbers, fog/leaks and held crop implemented. |
+| Date backs | `LeftRail`, film-edge resolution, native engine | Faces, order, shooting data, placement/corner/size/brightness and pair text implemented. The Mac date row is EXIF-derived, not a missing free-text editor. |
+| Enlarger and Solve | session, `LeftRail`, native engine | Exposure, Y/M pack, preflash, automatic solving and pair scope implemented. |
+| RAW white balance and neutral picker | `shared/whiteBalance.ts`, session, native engine | As Shot, presets/custom, re-decode and picker implemented. New photographs automatically use expanded linear RGB where supported; existing Windows edits retain compatible16. Explicit policy is saved/undoable and used by pairs/exports. LibRaw replaces Apple CIRAWFilter; expanded conversion follows uint16 AHD, not float demosaic or sensor highlight recovery. |
+| Lens correction | native Lensfun path | Matched profiles support distortion, camera-channel TCA and vignetting. Make disambiguates camera models, all eight RAW orientations are mapped, and gain-only correction avoids resampling. Invalid focal/aperture metadata cannot claim unsupported corrections. Apple and Lensfun profile coverage differ. |
+| Latitude/Scene Placement | `shared/latitude.ts`, `RightRail`, native engine | Measured histogram, below/within/above, fixed EV axis, ISO boundaries, CIE L* separation band/full-separation range and out-of-axis indicators now present; fitted pull-back controls and refusal reasons retained. |
+| Exposure/white balance post grade | `shared/adjustments.ts`, `RightRail` | Eight tone controls, WB, enable switch and reset implemented. |
+| Color Balance | `ColorBalanceEditor.tsx` | Master/3-Way/shadow/midtone/highlight tabs; triangular wheels, saturation/luminance arcs, numeric controls, keyboard edits and double-click resets now implemented. |
+| Curves | `CurveEditor.tsx` | Five channels, histogram, add/drag/off-plot removal, keyboard movement/deletion; right-click delete with protected endpoints and double-click channel reset now match the Mac interaction. |
+| Geometry and compare | `shared/geometry.ts`, Canvas/GL renderer | Crop/aspect/straighten/rotate/flip, Ctrl-drag straighten, pan/zoom, original and split compare implemented. |
+| Fresh/processed photograph workflow | `state/session.ts` | A fresh photograph now opens onto the decoded source; Solve, crop or an edit requests development. Viewing, resizing and color-space changes alone do not mark it processed. Existing edits restore their result. |
+| Undo/redo and settings clipboard | session, `shared/clipboard.ts` | Grouped copy/paste/sync, per-photo save, undo/redo and pair placement implemented. Continuous slider/wheel/curve gestures remain one undo step after 500 ms. |
+| Sidecar compatibility/conflicts | `shared/sidecar.ts`, `files.rs`, `agent_files.rs` | Mac schema, unknown-key preservation, moved-file identity, external edit detection and revision conflict protection implemented. |
+| Import/open/drop/single instance | platform, Rust file commands | RAW/raster input, Unicode paths, recursive folder scan, individual files and launch handoff implemented. Original photo/XMP files are preserved. |
+| Preview and RAW caches | displayCache, previewQueue, native decode cache | Persistent rendered/source pictures, embedded-camera prebuild, bounded work, corruption invalidation and lossless RAW cache implemented. Long filmstrips mount only nearby image consumers, retaining measured cell widths; camera thumbnail URLs use a 256-entry LRU while developed JPEGs preserve the edit on revisit. |
+| Display/output color | native host, Canvas/WebGL, color-space modules | sRGB/P3 developed and original/compare views independently negotiate RGBA16; a gradient test verifies more than 256 real source levels and matching 8/16-bit color conversion. High-precision buffers and profiled exports implemented. WebView2/Vulkan/LittleCMS replace Metal/ColorSync; Mac pixel equality is unverified. |
+| Export/recipes | `export/`, native `write_image` | Recipes, format/depth/space/quality/size, names/collisions, batch freezing/stop, DI/Cineon and cube export implemented. |
+| Export grid/viewer and Open With | `ExportPage`, exporter, platform | Persistent grid/viewer/columns, proof, file-frame selection, export job log and recipe-selected external app implemented. |
+| Memory, diagnostics and Agents | Settings, diagnostics/host, agent tools | Persisted soft memory budgets/one-operation override, cache controls, log retention/bundle, host restart and local Agent file coordination implemented. Private export/proof cleanup immediately trims unused frame buffers, including after failure/cancellation, preserving exact suspended editor results. |
+| Half-frame pair | `shared/pair.ts`, session/Canvas, native engine | Native pairs, hole placement/grade/decode, film layer, swap/fill, crop and library-owned variants implemented. |
+| Library catalog/session | `library/`, `library_host.rs`, original SDK | Create/open/recent, reference/copy import, watched folders, sync and locations implemented. Grid pagination bounds its display work. |
+| Library organization | `library/`, SDK | Album/group/project/smart album, membership, rename/move/delete collection, ratings/colors, search/type/date/camera/has-edit filters implemented. |
+| Library metadata/keyboard/file actions | LibraryPage/model | Header metadata read/cancel, offline state, shutter/aperture/focal length/dimensions/size, thumbnail-size persistence, arrows/Home/End/Enter/0-5/Ctrl+A and copy path/Explorer/context menus implemented. |
+| Library → editor context | model, `openPaths(selecting)` | Double-click/Enter on one image now loads all editable photographs in the current query across SDK pages, retaining active variants and focusing the target. Explicit Edit Selected retains its batch meaning. |
+| Variant editing/export | edits, session/exporter, SDK | Independent opaque settings, legacy first-variant adoption, optimistic revision and frozen batch snapshots implemented. Merely viewing an empty variant now leaves `has_edit` false. |
+| Library restart recovery | `library_host.rs` | Stable frontend handles reopen their saved paths after helper restart; interrupted mutations are never replayed and stale edit revisions still fail. |
+| Trash, session moves and relink | model, Rust Shell integration, SDK | Record trash/restore, session move/restore, missing-record removal, relink and session trash → Windows Recycle Bin implemented. Only successful recycled files lose SDK records; failed files remain. |
+| Capture One | original SDK, library UI | Linked read-only mirror, independent copy and update supported. Capture One render settings/masks/styles/previews are not converted, as on Mac. Unsupported criteria remain explicit. Real-catalog coverage requires a supplied catalog. |
+| Masks and Tone Mask | feature flags | Withdrawn/disabled by the reviewed Mac version too; not counted as a public Windows omission. |
+
+The remaining differences are platform integrations and unperformed cross-platform
+acceptance, not a claim of complete equivalence. Compare the same RAW and saved
+settings on a real Mac and Windows machine before promising identical decode,
+lens correction, gamut handling, GPU precision, imprints or exported pixels.
+
+Validation commands/logs: frontend typecheck/lint/Vitest, Playwright Edge,
+`spklib-tests.exe`, Rust native tests and the staged GUI. The per-run logs and
+real-photo artifacts are under `build/local/mac-full-audit/` and
+`build/local/mac-audit-*.log`. See `LIBRARY.md` for SDK and Capture One limits.
+RAW/color follow-up checks and real-camera outputs are under `build/local/raw-color/`;
+the 2026-10-28 run covers the 22 selected Sony ARW/enhanced DNG sources read-only.
+Batch performance follow-up logs are under `build/local/batch-performance/`:
+2844 RAW reference imports, 48 real-source edit/export stress samples, 8 full-size
+staged-GUI exports, corrupt-input recovery and cancellation. Private exports read
+existing RAW cache hits without populating new full-float entries.
+
+Peak-memory follow-up logs are under `build/local/peak-memory/` (2026-10-28).
+Vulkan now adopts exact-sized cached negatives instead of copying them, bounds
+oversized scratch reuse, and releases dead film intermediates earlier. Export
+postprocess reclaims unused float planes before allocating its CPU pixel result.
+The shader calculations, float precision, RAW decode and material profiles are
+unchanged. Shared-memory backends retain the file-backed negative copy path.
+Matched real 33 MP Sony ARW/enhanced-DNG runs, with grain/halation/glare enabled,
+reduced the native host's sampled peak private commit from 4327 to 3103 MiB in
+44 view updates and six full-size ProPhoto RGB16 TIFF exports. Export time was
+17.05 versus 16.92 seconds. All 44 RGBA16 payloads and TIFF sample bytes matched;
+these are local workload measurements, not total GUI/VRAM limits or Mac parity.
+The full 41 native tests, dedicated ownership/readback regressions, striped
+pixel comparison, and idle/batch/failure/cancellation/resume checks passed.
+
+The 2026-10-28 follow-up completed 64 full-size PNG exports in the staged GUI,
+then rebuilt and repeated the same 64 after fixing thumbnail contention.
+Small camera thumbnails now reuse the shared prebuilt display-cache descriptor
+before requesting the render host; reads do not retain another 2048px buffer.
+This keeps export-grid scrolling independent of a busy host when a preview is
+already prepared, while preserving bounded JPEG retention and cache-miss fallback.
+All 128 PNGs fully decoded with their ICC/dimensions verified, and the 64 RAW
+sources plus copies retained their hashes. 62 repeated pixel pairs matched;
+the two repeatedly developed editor frames have expected stochastic grain
+differences, not claimed bit equality. The rebuilt GUI's batch process-tree
+private-commit peak was 3471 MiB and settled near its pre-export 1745 MiB level;
+startup/reload peaked higher (4865 MiB). These are scoped local measurements,
+not physical-RAM/VRAM totals or Mac parity. Frontend checks passed 363 tests,
+with one realhost unit skipped and desktop exports checked separately.
+Artifacts: `build/local/peak-memory/long-gui/verification.json` and
+`../Windows/长时间RAW与桌面批量验证记录.txt`.
+
+Startup/switching follow-up (2026-10-28) reuses the live tier's exact linear
+source for matching-size source previews and trims idle full-print scratch
+before interactive display processing. Persistent source/negative/print
+caches, stochastic film state and shader math are unchanged. File exports
+retain their existing cleanup path instead of paying for a second trim.
+Matched six-RAW GUI runs, including a cached revisit, reduced the sampled
+process-tree private-commit maximum from 5248 to 4596 MiB (12.4%); the cached
+revisit fell 19.2%, while the first startup alone fell only about 2%.
+All 41 native tests passed, 30 real-source RGBA16 payloads matched byte for
+byte, and two full-size RGB16 TIFF pixel streams and ICC color data matched.
+These are scoped local measurements; dedicated VRAM and OS/driver variability
+are not a universal memory ceiling. Evidence is under
+`build/local/peak-memory/startup-*.json` and
+`../Windows/启动与切图峰值优化记录.txt`.
+
+### 2026-10-28 first-startup buffer lifetime follow-up
+
+Stages now consume their input chains. Coupler correction releases the consumed
+density plane before diffusion; completed grain affine inputs are also released
+before blur. The Vulkan allocator reclaims idle, incompatible preview planes
+only on large allocation misses, preserving full planes, live inputs and LUTs.
+No material, shader arithmetic, RAW precision or export depth changed.
+
+Fresh local A/B process starts used six matching owned RAW copies and a fixed
+maximized window. ARW startup medians (two starts per build) were 4.21 -> 3.68
+GiB total process-tree private commit (-12.69%); DNG was 3.64 -> 3.43 GiB
+(-5.86%, one start per build). First-view times were effectively unchanged.
+These are separate controlled measurements from the earlier 4.49 GiB record,
+not an absolute ceiling or a claim of reboot-cold disk performance.
+
+All 41 native tests passed, including new red/green memory regressions. Fifty
+RGBA16 payloads across normal/striped rendering, RAW white balance and grading
+were byte-identical to the preceding build. Two full-size ProPhoto RGB16 TIFF
+sample streams and ICC color data matched; total export time was 5.205 -> 5.231
+seconds. Six original RAWs and 42 owned copies retained their SHA-256 hashes.
+Evidence: `build/local/peak-memory/cold-final-verification.json` and
+`../Windows/首次启动峰值优化记录.txt`.
+
+### 2026-10-28 daily-use stabilization
+
+Window close now awaits sidecar persistence, keeps unsaved edits on failure,
+and rejects overlapping close requests or closing during active export/library
+work. Photo/folder navigation and pair transitions also preserve the current
+session when saving fails. Windows menu installation preserves the restored
+client size; the observed 20 px height loss on every restart is fixed.
+
+Validation: typecheck/lint; 372 frontend tests plus the explicitly enabled
+real-RAW TIFF integration test; all 47 browser workflow tests; 23 Rust tests
+plus both real SDK integration tests. The remaining ignored Rust entry is a
+sleeping child-process fixture used by a passing parent test. Actual desktop
+restart restored the saved exposure and retained window size; six full-size
+JPEGs decoded with correct orientations and Display P3 ICC profiles. Source
+RAW hashes stayed unchanged. The engine binary is unchanged from the previous
+41-test native gate. See `../Windows/日常使用验收记录.txt` and
+`build/local/daily-*.log` for the scoped local evidence.
+
+### 2026-10-28 clipped highlights and photo import
+
+Expanded RAW decoding now uses LibRaw's highlight chroma blend before the
+camera-to-ProPhoto transform. Saturated neutral subjects fade toward white
+instead of acquiring missing-channel magenta. Float output headroom and the
+compatible16 decoder are retained; lost sensor detail is not reconstructed.
+An owned real Sony ARW reproduced the reported car-body highlights before the
+fix and verified the decoded source, film output and full-size desktop JPEG
+afterward. Two shadow regions and compatible16 source/film outputs remained
+byte-identical. No source photograph changed.
+
+The toolbar and Ctrl+O now select photographs. A labelled adjacent menu and
+Ctrl+Shift+O select a folder; the empty canvas and native menu use the same
+mapping. Windows folder pickers intentionally hide photo files; choosing the
+folder imports its supported images recursively. Empty folders keep the
+current roll and show an explanation.
+
+Validation: 41 native tests (including a synthetic saturated-neutral Bayer
+regression shown failing on the old build), 373 frontend tests, 49 browser
+workflow tests, and actual Windows file/folder dialogs and 7028x4688 Display P3
+JPEG export. Local private evidence is in `build/local/highlight-import/` and
+is excluded from public release packages.

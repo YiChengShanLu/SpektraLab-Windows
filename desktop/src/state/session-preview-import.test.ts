@@ -3,6 +3,7 @@ import type { HelloResult } from '@shared/protocol';
 import { encodeSidecar, newSidecar } from '@shared/sidecar';
 import type { RgbaImage, RenderReply } from '../host/client';
 import type { DisplayCacheDescriptor } from './displayCache';
+import type * as DisplayCache from './displayCache';
 import type * as SessionModule from './session';
 
 const fake = vi.hoisted(() => ({
@@ -11,7 +12,7 @@ const fake = vi.hoisted(() => ({
   frames: { print: null as RenderReply | null, original: null as RgbaImage | null },
   pauseThumbs: vi.fn(), forget: vi.fn(),
 }));
-vi.mock('./displayCache', () => ({ displayCacheKey: fake.key, readDisplayCache: fake.read, writeDisplayCache: fake.write,
+vi.mock('./displayCache', async (original) => ({ ...await original<typeof DisplayCache>(), displayCacheKey: fake.key, readDisplayCache: fake.read, writeDisplayCache: fake.write,
   forgetDisplayMemoryCache: fake.forget, peekDisplayCache: vi.fn(() => null) }));
 vi.mock('./frames', () => ({ frameImages: fake.frames, makeThumbFromPrint: async () => null, THUMB_EDGE: 320 }));
 vi.mock('./thumbs', () => ({ thumbs: { reset: vi.fn(), setPaused: fake.pauseThumbs, setPrint: vi.fn() } }));
@@ -44,7 +45,7 @@ beforeEach(async () => {
   fake.open.mockImplementation(async (path: string) => ({ session: `sid:${path}`, width: 6000, height: 4000, kind: 'raw', metadata: {} }));
   fake.renderView.mockImplementation(async (_sid: string, tier: string) => ({ ...image(), tier, reprinted: true, ms: 1 }));
   fake.renderSource.mockResolvedValue(image());
-  const sidecar = newSidecar(); sidecar.params.filmEdge.seeded = true;
+  const sidecar = newSidecar(); sidecar.state = 'processed'; sidecar.params.filmEdge.seeded = true;
   fake.load.mockResolvedValue(encodeSidecar(sidecar));
   fake.files.mockResolvedValue([file('first.jpg'), file('next.ARW'), file('other.tiff'), file('last.NEF')]);
   session = await import('./session'); ready();
@@ -52,6 +53,57 @@ beforeEach(async () => {
 afterEach(() => { session.importPreviews.dispose(); vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe('background import preview integration', () => {
+  it('reports a folder without supported photos and keeps the current roll', async () => {
+    await session.openFolder('/owned');
+    const before = session.sessionStore.getState();
+    fake.files.mockResolvedValue([]);
+    await session.openFolder('/empty');
+    const after = session.sessionStore.getState();
+    expect(after.selection).toBe(before.selection);
+    expect(after.frames).toEqual(before.frames);
+    expect(after.status).toContain('No supported photographs');
+  });
+  it('opens a fresh photo onto its decoded source and develops only after an explicit edit', async () => {
+    fake.load.mockResolvedValue(null);
+    await session.select('/owned/fresh.ARW');
+    expect(fake.frames.original).not.toBeNull();
+    expect(fake.frames.print).toBeNull();
+    expect(fake.renderView).not.toHaveBeenCalled();
+    expect(session.sessionStore.getState().sidecar.state).toBe('unprocessed');
+    session.noteCanvasPx(1200, 800);
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(fake.renderView).not.toHaveBeenCalled();
+    session.setAdjustments((a) => ({ ...a, exposure: .5 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.renderView).toHaveBeenCalled();
+    expect(session.sessionStore.getState().sidecar.state).toBe('processed');
+  });
+  it('bounds background sidecar reads so a large roll can open its first frame, and drops a previous roll', async () => {
+    const files = Array.from({ length: 500 }, (_, i) => file(`large-${i}.jpg`));
+    fake.files.mockResolvedValue(files);
+    const saved = encodeSidecar(newSidecar());
+    const pending: ((value: typeof saved) => void)[] = [];
+    fake.load.mockImplementation(async (path: string) => {
+      if (path === files[0]!.path || path === '/owned/new.jpg') return saved;
+      return new Promise((resolve) => pending.push(resolve));
+    });
+    try {
+      await session.openFolder('/large');
+      expect(fake.open.mock.calls.map(([path]) => path)).toEqual([files[0]!.path]);
+      expect(pending.length).toBeGreaterThan(0);
+      expect(pending.length).toBeLessThanOrEqual(8);
+      fake.files.mockResolvedValue([file('new.jpg')]);
+      await session.openFolder('/new');
+      const calls = fake.load.mock.calls.length;
+      for (const finish of pending) finish(saved);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fake.load).toHaveBeenCalledTimes(calls);
+      expect(session.sessionStore.getState().savedGeometry).not.toHaveProperty(files[1]!.path);
+    } finally {
+      for (const finish of pending) finish(saved);
+    }
+  });
+
   it('does not count an extracted camera preview whose cache write was rejected as prepared', async () => {
     fake.write.mockResolvedValue(false);
     await session.openFolder('/owned');

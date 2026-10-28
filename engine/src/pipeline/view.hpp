@@ -44,7 +44,7 @@ bool render(spk_session* session, const Request& request, Result& result, std::s
 // Current decoded source, before the film. No embedded camera JPEG and no
 // display-space reinterpretation. The source stays resident on the device.
 bool render_source(spk_session* session, uint32_t long_edge, const std::string& display,
-                   Result& result, std::string& error);
+                   Result& result, std::string& error, bool rgba16 = false);
 struct SourceSample {
     std::array<double, 3> mean{}, minimum{}, maximum{};
     uint32_t samples = 0;
